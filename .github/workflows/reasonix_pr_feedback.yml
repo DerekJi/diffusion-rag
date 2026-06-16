@@ -79,12 +79,11 @@ jobs:
         shell: bash
         run: |
           ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body --jq .body 2>/dev/null || echo "")
-          LEVEL=$(echo "$ISSUE_BODY" | grep -i '^level:' | head -1 | sed 's/.*:[[:space:]]*//i' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$LEVEL" ]; then LEVEL="medium"; fi
-          case "$LEVEL" in
-            low|flash) echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT;;
-            medium|pro|high) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
-            *) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
+          RAW=$(echo "$ISSUE_BODY" | grep -im1 '^level:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$RAW" ]; then RAW="medium"; fi
+          case "$RAW" in
+            pro|high|deepseek-v4-pro) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
+            *) echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT;;
           esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
