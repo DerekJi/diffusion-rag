@@ -102,7 +102,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          npx reasonix code --preset max --task "$(cat task_prompt.txt)"
+          npx reasonix code --model deepseek-v4-pro --task "$(cat task_prompt.txt)"
         shell: bash
 
       # ── 7. 代码验证 ───────────────────────────────────────
@@ -135,7 +135,7 @@ jobs:
 
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
-          npx reasonix code --preset max --task "$(cat fix_prompt.txt)"
+          npx reasonix code --model deepseek-v4-pro --task "$(cat fix_prompt.txt)"
         shell: bash
 
       # ── 9. 配置 Git 身份 ─────────────────────────────────

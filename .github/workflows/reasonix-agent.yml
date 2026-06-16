@@ -43,7 +43,7 @@ jobs:
           printf '\n\n## 代码变更 Diff\n\n' >> reasonix_prompt.txt
           cat pr_changes.diff >> reasonix_prompt.txt
           
-          npx reasonix code --preset max --task "$(cat reasonix_prompt.txt)" > reasonix_report.md
+          npx reasonix code --model deepseek-v4-pro --task "$(cat reasonix_prompt.txt)" > reasonix_report.md
 
       # 5. 将 Reasonix 的推理审查报告自动以评论形式发表在 PR 下面
       - name: Post Comment to PR
