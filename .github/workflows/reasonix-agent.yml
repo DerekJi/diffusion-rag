@@ -69,10 +69,8 @@ jobs:
           printf '\n\n## 代码变更 Diff\n\n' >> review_prompt.txt
           cat pr_changes.diff >> review_prompt.txt
 
-          npx reasonix run \
+          npx reasonix@1.2.0 run \
             --model deepseek-v4-pro \
-            --effort high \
-            --budget 0.5 \
             "$(cat review_prompt.txt)" > .temp/review-report.md
 
       # ── 7. 发布审查报告到 PR ────────────────────────────
@@ -107,10 +105,8 @@ jobs:
           printf '\n\n## 代码变更 Diff\n\n' >> fix_prompt.txt
           cat pr_changes.diff >> fix_prompt.txt
 
-          npx reasonix run \
+          npx reasonix@1.2.0 run \
             --model deepseek-v4-pro \
-            --effort high \
-            --budget 0.5 \
             "$(cat fix_prompt.txt)"
 
       # ── 9. 验证修复后代码 ────────────────────────────────
@@ -136,10 +132,8 @@ jobs:
           3. 修复所有失败项
           4. 重复直到全部绿色
           PROMPT_END
-          npx reasonix run \
+          npx reasonix@1.2.0 run \
             --model deepseek-v4-pro \
-            --effort high \
-            --budget 0.3 \
             "$(cat repair2.txt)"
 
           # 再验证一次

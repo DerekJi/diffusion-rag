@@ -168,7 +168,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           MODEL="${{ steps.config.outputs.model }}"
-          npx reasonix run --model "$MODEL" --effort ${{ steps.config.outputs.level }} "$(cat task_prompt.txt)"
+          npx reasonix@1.2.0 run --model "$MODEL" "$(cat task_prompt.txt)"
         shell: bash
 
       # ── 8. 代码验证 ───────────────────────────────────────
@@ -228,7 +228,7 @@ jobs:
             FIX_EOF
           fi
 
-          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat fix_prompt.txt)"
+          npx reasonix@1.2.0 run --model "${{ steps.config.outputs.model }}" "$(cat fix_prompt.txt)"
 
       # ── 10. 配置 Git 身份 ─────────────────────────────────
       - name: Configure Git
