@@ -12,8 +12,9 @@ help:
 	@echo "  make format       自动格式化代码"
 	@echo "  make typecheck    类型检查 (mypy --strict)"
 	@echo "  make check        全部静态检查 (lint + typecheck)"
-	@echo "  make benchmark    运行基线评测 (NFCorpus)"
-	@echo "  make benchmark-ms 运行基线评测 (MS-MARCO)"
+	@echo "  make benchmark      运行基线评测 (NFCorpus)"
+	@echo "  make benchmark-quick 快速测试 (10条 query, ~1分钟)"
+	@echo "  make benchmark-ms   运行基线评测 (MS-MARCO)"
 	@echo "  make clean        清理缓存文件"
 	@echo "  make all          安装 → 检查 → 测试"
 
