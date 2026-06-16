@@ -2,315 +2,222 @@
 applyTo: "**/*.py"
 ---
 
-# Python Naming Conventions for VedaAgent
+# Python 命名规范（Diffusion RAG）
 
-> 本文档规定了VedaAgent项目中Python代码的命名规范，确保代码库保持一致性和可维护性。
+> 本文档规定本仓库 Python 代码的命名规范，目标是保持一致性、可读性和可维护性。
 
-## 核心原则
+## 总原则
 
-遵循 **PEP 8 — Style Guide for Python Code**，同时考虑项目特定的架构需求。
-
----
-
-## 1. 包和模块名（Package & Module Names）
-
-### 规则
-
-- **Python包名**：全小写，使用下划线（`snake_case`）
-- **模块文件名**：全小写，使用下划线（`snake_case`）
-- **目录名**：对标准库/第三方的，用下划线；对CLI命令的，用短横线
-
-### 示例
-
-✅ **正确**
-```python
-from kernel.graph.state import GraphState
-from kernel.llm import build_llm
-from tools.code_tools.analysis import analyze_code
-from memory.retrieval import MemoryRetriever
-from session.context_manager import ContextManager
-```
-
-❌ **错误**
-```python
-from kernel.graph.state import GraphState  # 不要：Kernel (大写)
-from kernel.LLM import build_llm  # 不要：LLM (全大写模块名)
-from tools.CodeTools import analyze_code  # 不要：CodeTools (驼峰式)
-```
+遵循 **PEP 8**，并结合当前仓库的模块划分：
+- `src/baseline/`
+- `src/evaluation/`
+- `src/vector_store/`
+- `src/utils/`
 
 ---
 
-## 2. 类名（Class Names）
+## 1. 包和模块名
 
 ### 规则
-
-- **类名**：CapWords（PascalCase），简洁有力
-- **前缀**：
-  - 业务工具类用 `Tool` 后缀：`FileEditTool`, `ShellTool`
-  - 管理器类用 `Manager` 后缀：`SessionManager`, `ContextManager`
-  - 提取器/检索器用特定后缀：`LongTermMemoryExtractor`, `MemoryRetriever`
-  - 基类用 `Base` 前缀或作为抽象：`VedaTool`（基类）
+- Python 包名使用全小写 `snake_case`
+- 模块文件名使用全小写 `snake_case`
+- 目录名与 Python 包保持一致时，也使用 `snake_case`
 
 ### 示例
 
-✅ **正确**
+✅ 正确
 ```python
-class SessionManager:
-    """Manages session lifecycle."""
-    pass
-
-class FileEditTool(VedaTool):
-    """Implements file editing tool."""
-    pass
-
-class LongTermMemoryExtractor:
-    """Extracts long-term memory."""
-    pass
+from src.baseline.encoder import BaselineEncoder
+from src.vector_store.indexer import FAISSIndexer
+from src.evaluation.metrics import compute_metrics
+from src.utils.logger import get_logger
 ```
 
-❌ **错误**
+❌ 错误
 ```python
-class session_manager:  # 不要：snake_case
-class File_Edit_Tool:   # 不要：混合
-class extractLongTermMemory:  # 不要：驼峰式
+from src.Baseline.encoder import BaselineEncoder
+from src.vectorStore.indexer import FAISSIndexer
 ```
 
 ---
 
-## 3. 函数和方法名（Function & Method Names）
+## 2. 类名
 
 ### 规则
+- 类名使用 `PascalCase`
+- 类名应简洁、明确，尽量表达职责
 
-- **函数/方法名**：全小写，单词间用下划线（`snake_case`）
-- **约定**：
-  - `_private_method()`：单下划线前缀表示私有
-  - `__dunder__()`：双下划线用于特殊方法（`__init__`, `__str__`, 等）
-  - `async_method()`：异步方法应在名称中标明（可选，但推荐）或通过 `async def` 清晰
+### 常见后缀
+- 编码器：`Encoder`
+- 索引器：`Indexer`
+- 检索器：`Retriever`
+- 管理器：`Manager`
+- 结果对象：`Result`
+- 数据对象：`Dataset` / `Config`
 
 ### 示例
 
-✅ **正确**
+✅ 正确
 ```python
-def build_tool_registry():
-    """Public function."""
+class BaselineEncoder:
     pass
 
-def _parse_session_id(session_id):
-    """Private helper."""
+class FAISSIndexer:
     pass
 
-async def execute_tools():
-    """Async method."""
-    pass
-
-def get_session_info(self):
-    """Method name is lowercase."""
+class MetricsResult:
     pass
 ```
 
-❌ **错误**
+❌ 错误
 ```python
-def buildToolRegistry():  # 不要：驼峰式
-def parse_session_id():   # 不要：应加 _ 表示私有
-def GetSessionInfo():     # 不要：CapWords用于函数
+class baseline_encoder:
+    pass
+
+class faiss_indexer:
+    pass
 ```
 
 ---
 
-## 4. 常量名（Constant Names）
+## 3. 函数和方法名
 
 ### 规则
-
-- **常量名**：全大写，单词间用下划线（`UPPER_SNAKE_CASE`）
-- **位置**：在模块或类的顶部定义
-- **约定**：
-  - 配置常数、魔数、枚举值都用全大写
-  - 如果是模块级常数，应在 `__all__` 中导出（可选）
+- 函数和方法名使用 `snake_case`
+- 私有辅助函数使用单下划线前缀 `_`
+- 特殊方法保持 Python 约定写法，如 `__init__`
 
 ### 示例
 
-✅ **正确**
+✅ 正确
 ```python
-# veda_agent/config.py
-DEFAULT_MAX_ITERATIONS = 10
-CONTEXT_MAX_TOKENS = 8192
-CONTEXT_RESERVE_TOKENS = 512
-MEMORY_TYPE_LABELS = {
-    "short_term": "Short-term",
-    "long_term": "Long-term",
-}
+def load_dataset(name: str):
+    ...
 
-class SessionManager:
-    MAX_SESSION_LIFETIME = 3600  # 1 hour
+def _normalize_vector(vector):
+    ...
 ```
 
-❌ **错误**
+❌ 错误
 ```python
-default_max_iterations = 10  # 不要：应为常数
-DefaultMaxIterations = 10    # 不要：常数用全大写
+def loadDataset(name: str):
+    ...
+
+def NormalizeVector(vector):
+    ...
 ```
 
 ---
 
-## 5. 变量名（Variable Names）
+## 4. 常量名
 
 ### 规则
-
-- **变量名**：全小写，单词间用下划线（`snake_case`），清晰有意义
-- **约定**：
-  - 避免单字母变量，除非是循环索引（`i`, `j`, `k`）或明确的数学符号（`n`, `m`）
-  - 避免模糊缩写；使用完整单词或已建立的术语
+- 常量使用 `UPPER_SNAKE_CASE`
+- 配置项、默认值、固定参数都应使用常量命名
 
 ### 示例
 
-✅ **正确**
+✅ 正确
 ```python
-session_id = "sess_123"
-context_window_size = 8192
-llm_response = model.generate(prompt)
-for i in range(len(items)):
-    process(items[i])
+DEFAULT_K_VALUES = [5, 10, 20]
+VECTOR_DIM = 768
+DEFAULT_SEED = 42
 ```
 
-❌ **错误**
+❌ 错误
 ```python
-sessionID = "sess_123"  # 不要：驼峰式
-s = "sess_123"          # 不要：模糊
-ctx_sz = 8192           # 不要：无意义缩写
-for x in range(len(items)):  # 不要：x 不清晰
+default_k_values = [5, 10, 20]
+vectorDim = 768
 ```
 
 ---
 
-## 6. CLI 命令和脚本名（CLI Command & Script Names）
+## 5. 变量名
 
 ### 规则
-
-- **CLI 命令**：全小写，单词间用短横线（`kebab-case`）
-- **脚本文件名**：同上或 `snake_case`（均接受）
-- **目录名**：如果代表 CLI 命令组，用短横线；如果代表 Python 包，用下划线
+- 变量名使用 `snake_case`
+- 名称应尽量具体，避免模糊缩写
+- 循环索引可使用 `i`, `j`, `k`
 
 ### 示例
 
-✅ **正确**
+✅ 正确
+```python
+query_text = "what is retrieval"
+query_ids = ["q1", "q2"]
+retrieved_doc_ids = ["d1", "d2"]
+```
+
+❌ 错误
+```python
+qTxt = "what is retrieval"
+ids = ["q1", "q2"]
+```
+
+---
+
+## 6. CLI 命令和脚本名
+
+### 规则
+- CLI 命令使用全小写 `kebab-case`
+- 脚本文件名优先使用 `snake_case`
+
+### 示例
+
+✅ 正确
 ```toml
-# pyproject.toml
 [project.scripts]
-veda = "kernel.cli.main:main"
-kernel-web = "kernel.web.app:main"
-kernel-stdio = "kernel.stdio.adapter:run_adapter"
+baseline-benchmark = "src.baseline.benchmark:main"
 ```
 
-```bash
-# CLI usage
-$ veda --help
-$ kernel-web --port 8000
-$ kernel-stdio start
-```
-
-❌ **错误**
+❌ 错误
 ```toml
-veda_agent = "kernel.cli.main:main"  # 不要：CLI命令用短横线
-veda-Agent = "kernel.cli.main:main"  # 不要：大小写不一
+baselineBenchmark = "src.baseline.benchmark:main"
 ```
 
 ---
 
-## 7. 目录结构命名（Directory Structure）
+## 7. 目录命名
 
 ### 规则
+- Python 包目录使用 `snake_case`
+- 功能目录保持与模块导入一致
 
-- **Python 包目录**：下划线（`snake_case`），与模块导入一致
-- **功能目录**：短横线（`kebab-case`）- 如测试数据、文档、脚本目录
-- **顶级项目目录**：短横线（`kebab-case`）- 如 `veda-agent`, `tui` 等
-
-### VedaAgent 标准结构
-
-```
-veda-agent/
-├── kernel/           # Python package (underscores)
-│   ├── cli/
-│   ├── db/
-│   ├── graph/
-│   ├── llm.py
-│   └── utils/
-├── tools/            # Python package (underscores)
-├── memory/           # Python package (underscores)
-├── session/          # Python package (underscores)
-├── tui/              # TypeScript frontend
-├── harness/          # Test framework
-├── tests/            # Test suite
-├── docs/             # Documentation
-├── data/             # Data files
-└── pyproject.toml
+### 当前仓库示例
+```text
+src/
+├── baseline/
+├── evaluation/
+├── vector_store/
+└── utils/
 ```
 
 ---
 
-## 8. 特殊约定（Special Conventions）
+## 8. 特殊约定
 
-### 导出和 `__all__`
+### 8.1 导出 API
+如需要导出公共 API，建议在 `__init__.py` 中显式声明。
 
-```python
-# kernel/__init__.py
-from kernel.graph import build_graph
-from kernel.llm import build_llm
+### 8.2 类型提示
+公共函数应尽量补全类型提示。
 
-__all__ = [
-    "build_graph",
-    "build_llm",
-]
-```
-
-### 类型提示（Type Hints）
-
-```python
-from typing import Optional, List, Dict
-
-def build_context(
-    session_id: str,
-    messages: List[Dict[str, str]],
-    max_tokens: Optional[int] = None,
-) -> Dict[str, str]:
-    """Type hints follow the same naming rules."""
-    pass
-```
-
-### 枚举（Enums）
-
-```python
-from enum import Enum
-
-class MemoryType(Enum):
-    """Memory type enumeration."""
-    SHORT_TERM = "short_term"
-    LONG_TERM = "long_term"
-```
+### 8.3 文档字符串
+公共类和函数应使用中文或中英结合的清晰 docstring，说明用途、参数和返回值。
 
 ---
 
-## 9. 检查清单（Checklist）
+## 9. 检查清单
 
-在提交代码前，检查：
-
-- [ ] 模块/包名都是 `snake_case`（小写字母和下划线）
-- [ ] 类名都是 `CapWords`（PascalCase）
-- [ ] 函数/方法名都是 `snake_case`（小写字母和下划线）
-- [ ] 常量名都是 `UPPER_SNAKE_CASE`（全大写和下划线）
-- [ ] CLI 命令都是 `kebab-case`（全小写和短横线）
-- [ ] 没有混合使用驼峰式和下划线
-- [ ] 导出的 API 在 `__all__` 中清晰列出
-- [ ] 私有方法用 `_` 或 `__` 前缀
+提交前请确认：
+- [ ] 模块/包名是 `snake_case`
+- [ ] 类名是 `PascalCase`
+- [ ] 函数/方法名是 `snake_case`
+- [ ] 常量名是 `UPPER_SNAKE_CASE`
+- [ ] 私有辅助函数使用 `_` 前缀
+- [ ] CLI 命令使用 `kebab-case`
+- [ ] 公共 API 有类型注解和 docstring
 
 ---
 
-## 10. 参考资源
-
-- [PEP 8 - Style Guide for Python Code](https://pep8.org/)
-- [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
-- [The Hitchhiker's Guide to Python - Code Style](https://docs.python-guide.org/writing/style/)
-
----
-
-**Last Updated**: 2026-05-31  
-**Applied To**: VedaAgent project repository
+**适用范围**：本仓库全部 Python 文件

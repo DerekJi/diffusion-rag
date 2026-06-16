@@ -30,6 +30,7 @@ def run_benchmark(
     k_values: list[int] | None = None,
     seed: int = DEFAULT_SEED,
     output_dir: str = "experiments/outputs",
+    sample: int | None = None,
 ) -> pd.DataFrame:
     """运行完整基线评测流程。
 
@@ -59,6 +60,20 @@ def run_benchmark(
 
     # 1. 加载数据集
     data = load_dataset(dataset)
+
+    # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
+    if sample is not None and sample < len(data.queries):
+        # 只保留有 qrels 的 query，取前 sample 条
+        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
+        sampled_qids = qids_with_qrels[:sample]
+        data.queries = {qid: data.queries[qid] for qid in sampled_qids}
+        data.qrels = {qid: data.qrels[qid] for qid in sampled_qids}
+        referenced: set[str] = set()
+        for qid in sampled_qids:
+            referenced.update(data.qrels[qid].keys())
+        data.corpus = {did: data.corpus[did] for did in referenced if did in data.corpus}
+        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+
     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
 
     # 2. 编码文档 + 建索引
@@ -119,6 +134,12 @@ def _main() -> None:
     parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称")
     parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES, help="k 值列表")
     parser.add_argument("--nlist", type=int, default=DEFAULT_INDEX_NLIST, help="IVF 聚类中心数")
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="仅取前 N 条 query 快速测试（默认全量）",
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
     parser.add_argument("--output", default="experiments/outputs", help="输出目录")
     args = parser.parse_args()
@@ -131,6 +152,7 @@ def _main() -> None:
         k_values=list(args.k),
         seed=args.seed,
         output_dir=args.output,
+        sample=args.sample,
     )
     # print() is intentional: CLI stdout output for the result table
     print(df.to_markdown())

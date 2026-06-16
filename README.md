@@ -1,7 +1,7 @@
 # Diffusion RAG
 
 > 基于 ELF（Embedded Language Flows）扩散模型的语义检索增强实验原型  
-> Phase 1: 传统检索基线已就绪
+> Phase 1：传统检索基线已就绪
 
 ## 快速开始
 

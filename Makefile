@@ -46,6 +46,9 @@ check: lint typecheck
 benchmark:
 	python -m src.baseline.benchmark --dataset nfcorpus
 
+benchmark-quick:
+	python -m src.baseline.benchmark --dataset nfcorpus --sample 10
+
 benchmark-ms:
 	python -m src.baseline.benchmark --dataset msmarco
 
