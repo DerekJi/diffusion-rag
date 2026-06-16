@@ -6,10 +6,6 @@
 import math
 from dataclasses import dataclass, field
 
-from src.utils.logger import get_logger
-
-logger = get_logger(__name__)
-
 
 @dataclass
 class MetricsResult:
@@ -131,10 +127,15 @@ def compute_metrics_batch(
 def _dcg(relevances: list[int]) -> float:
     """计算 DCG（Discounted Cumulative Gain）。
 
-    使用标准公式: rel_1 + sum_{i=2..n} rel_i / log2(i)。
+    使用 TREC 标准公式:
+        DCG = rel_1 + Σ_{i=2..n} rel_i / log₂(i)
+
+    该公式将排名 1 的文档不做折扣，从排名 2 开始按 log₂(rank) 折损。
+    与另一种常见定义 Σ rel_i / log₂(i+1) 相比，区别仅在于排名偏移。
+    TREC 官方评测和 BEIR 基准均使用本实现。
 
     Args:
-        relevances: 相关性分数列表。
+        relevances: 相关性分数列表，从最高排名开始。
 
     Returns:
         DCG 值。

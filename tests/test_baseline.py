@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -11,43 +12,90 @@ from src.evaluation.metrics import compute_metrics, compute_metrics_batch
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
 
-# ── Encoder tests ──────────────────────────────────────────────
+# ── Encoder tests (mock 模式，不需下载模型) ─────────────────────
 
 
-class TestBaselineEncoder:
-    """BaselineEncoder 单元测试。"""
+class TestBaselineEncoderMock:
+    """使用 mock 的编码器测试，无需网络/模型缓存。
 
-    @pytest.fixture(scope="class")
-    def encoder(self) -> BaselineEncoder:
-        """所有测试共享的编码器实例（class scope 避免重复加载）。"""
-        return BaselineEncoder(device="cpu")
+    通过 mock SentenceTransformer 类的构造函数，使其返回一个
+    MagicMock 实例，encode 方法返回固定 768-dim 归一化向量。
+    """
 
-    def test_encode_shape(self, encoder: BaselineEncoder) -> None:
+    @pytest.fixture(autouse=True)
+    def _mock_model(self) -> None:
+        """mock SentenceTransformer 类，返回 mock 实例。"""
+        rng = np.random.RandomState(42)
+        fixed_vec = rng.randn(768).astype(np.float32)
+        fixed_vec /= np.linalg.norm(fixed_vec)
+
+        mock_instance = MagicMock()
+        mock_instance.encode.return_value = fixed_vec
+
+        patcher = patch(
+            "src.baseline.encoder.SentenceTransformer",
+            return_value=mock_instance,
+        )
+        patcher.start()
+        yield
+        patcher.stop()
+
+    def test_encode_shape(self) -> None:
         """输出 shape == (768,)。"""
+        encoder = BaselineEncoder(device="cpu")
         vec = encoder.encode("Hello world")
         assert vec.shape == (768,)
 
-    def test_encode_dtype(self, encoder: BaselineEncoder) -> None:
+    def test_encode_dtype(self) -> None:
         """输出 dtype == float32。"""
+        encoder = BaselineEncoder(device="cpu")
         vec = encoder.encode("Hello world")
         assert vec.dtype == np.float32
 
-    def test_encode_l2_norm(self, encoder: BaselineEncoder) -> None:
+    def test_encode_l2_norm(self) -> None:
         """L2 范数约为 1.0。"""
+        encoder = BaselineEncoder(device="cpu")
         vec = encoder.encode("Hello world")
         norm = float(np.linalg.norm(vec))
         assert abs(norm - 1.0) < 1e-5
+
+    def test_encode_empty_string(self) -> None:
+        """空字符串应 raise ValueError。"""
+        encoder = BaselineEncoder(device="cpu")
+        with pytest.raises(ValueError):
+            encoder.encode("")
+
+    def test_encode_batch_shape(self) -> None:
+        """batch 输出 shape == (N, 768)。"""
+        mock_batch = np.random.RandomState(42).randn(3, 768).astype(np.float32)
+        with patch(
+            "src.baseline.encoder.SentenceTransformer",
+            return_value=MagicMock(encode=MagicMock(return_value=mock_batch)),
+        ):
+            encoder = BaselineEncoder(device="cpu")
+            vecs = encoder.encode_batch(["a", "bb", "ccc"])
+        assert vecs.shape == (3, 768)
+        assert vecs.dtype == np.float32
+
+
+# ── Encoder tests (真实模型，需下载) ────────────────────────────
+
+
+@pytest.mark.slow
+class TestBaselineEncoderReal:
+    """需要真实 BGE 模型下载的集成测试。
+    通过 pytest -m slow 执行，日常跳过。
+    """
+
+    @pytest.fixture(scope="class")
+    def encoder(self) -> BaselineEncoder:
+        return BaselineEncoder(device="cpu")
 
     def test_encode_deterministic(self, encoder: BaselineEncoder) -> None:
         """同一文本两次编码结果一致。"""
         v1 = encoder.encode("Test sentence")
         v2 = encoder.encode("Test sentence")
         assert np.allclose(v1, v2, atol=1e-6)
-
-    def test_encode_empty_string(self, encoder: BaselineEncoder) -> None:
-        """空字符串应 raise ValueError。"""
-        with pytest.raises(ValueError):
-            encoder.encode("")
 
     def test_encode_batch_shape(self, encoder: BaselineEncoder) -> None:
         """batch 输出 shape == (N, 768)。"""

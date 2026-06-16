@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from src.baseline.encoder import BaselineEncoder
 from src.config import DEFAULT_ENCODER, DEFAULT_INDEX_NLIST, DEFAULT_K_VALUES, DEFAULT_SEED
-from src.evaluation.dataset import load_dataset
+from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
 from src.utils.logger import get_logger
 from src.utils.seed import set_seed
@@ -62,16 +62,20 @@ def run_benchmark(
     data = load_dataset(dataset)
 
     # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
+    # 使用新变量 sample_data，不修改原始 data
+    sample_data = data
     if sample is not None and sample < len(data.queries):
-        # 只保留有 qrels 的 query，取前 sample 条
         qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
         sampled_qids = qids_with_qrels[:sample]
-        data.queries = {qid: data.queries[qid] for qid in sampled_qids}
-        data.qrels = {qid: data.qrels[qid] for qid in sampled_qids}
         referenced: set[str] = set()
         for qid in sampled_qids:
             referenced.update(data.qrels[qid].keys())
-        data.corpus = {did: data.corpus[did] for did in referenced if did in data.corpus}
+        sample_data = DatasetTriple(
+            queries={qid: data.queries[qid] for qid in sampled_qids},
+            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
+            qrels={qid: data.qrels[qid] for qid in sampled_qids},
+        )
+        data = sample_data
         logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
 
     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
