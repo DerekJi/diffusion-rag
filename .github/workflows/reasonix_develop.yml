@@ -1,0 +1,185 @@
+name: Reasonix AI Developer
+
+# 触发：给 Issue 打上 "ai-dev" 标签时自动开发
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai_development:
+    if: github.event.label.name == 'ai-dev'
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. 检出代码 ──────────────────────────────────────
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: false
+
+      # ── 2. 设置 Python + Node ────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 3. 缓存 HuggingFace 模型 ──────────────────────────
+      - name: Cache HuggingFace Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ hashFiles('requirements.txt') }}
+          restore-keys: hf-models-
+
+      # ── 4. 安装依赖 ──────────────────────────────────────
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        shell: bash
+
+      # ── 5. 组装开发任务 Prompt ───────────────────────────
+      #    将 Issue 内容 + .reasonix/commands/ 工程标准注入
+      - name: Formulate Task Prompt
+        id: prompt
+        run: |
+          cat > task_prompt.txt << 'PROMPT_EOF'
+          # 开发任务
+
+          ## Issue 描述
+          标题: ${{ github.event.issue.title }}
+          需求:
+          ${{ github.event.issue.body }}
+
+          ## 项目开发规范
+          请严格遵循以下仓库定义的标准来完成任务。
+
+          ### develop.md — 开发流程
+          PROMPT_EOF
+          cat .reasonix/commands/develop.md >> task_prompt.txt
+          printf '\n\n### code-review.md — 代码审查标准\n' >> task_prompt.txt
+          cat .reasonix/commands/code-review.md >> task_prompt.txt
+          printf '\n\n### fix-bug.md — Bug 修复流程\n' >> task_prompt.txt
+          cat .reasonix/commands/fix-bug.md >> task_prompt.txt
+          printf '\n\n### feature.md — 功能实现流程\n' >> task_prompt.txt
+          cat .reasonix/commands/feature.md >> task_prompt.txt
+          cat >> task_prompt.txt << 'PROMPT_EOF'
+
+          ## 项目背景
+          本仓库为 Diffusion RAG 项目 — 基于 ELF 扩散模型的语义检索增强原型。
+          - 语言: Python 3.10+
+          - 测试: pytest + pytest-cov
+          - 风格: black (line-length=100) + isort + mypy --strict
+          - 关键模块: src/baseline/, src/vector_store/, src/evaluation/, src/utils/
+          - 计划文档: docs/phase1-detailed-plan.md, docs/diffusion-rag-plan.md
+
+          ## 执行要求
+          1. 按 feature.md 流程推进：为每个子任务启动独立的 subagent
+          2. 每完成一段代码先运行 `pytest tests/ -q` 验证
+          3. 代码审查通过后再继续下一个子任务
+          4. 全部完成后运行 `make check && make test-cov` 确保全部通过
+          5. 自行修复发现的任何问题，直到全部绿色
+          PROMPT_EOF
+
+          echo "Task prompt assembled ($(wc -l < task_prompt.txt) lines)"
+        shell: bash
+
+      # ── 6. 运行 Reasonix 自主开发 ─────────────────────────
+      - name: Run Reasonix Developer Agent
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          npx reasonix code --preset max --task "$(cat task_prompt.txt)"
+        shell: bash
+
+      # ── 7. 代码验证 ───────────────────────────────────────
+      - name: Run Static Checks
+        id: checks
+        continue-on-error: true
+        run: |
+          echo "### black + isort + mypy" >> $GITHUB_STEP_SUMMARY
+          black . --line-length 100 --check 2>&1 | tail -5
+          isort . --check-only 2>&1 | tail -5
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### pytest" >> $GITHUB_STEP_SUMMARY
+          pytest tests/ -q --cov=src --cov-report=term-missing 2>&1 | tail -20
+        shell: bash
+
+      # ── 8. 如果验证失败，让 AI 自修复 ─────────────────────
+      - name: Auto-fix if Checks Failed
+        if: steps.checks.outcome == 'failure'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          echo "Checks failed, running fix subagent..." >> $GITHUB_STEP_SUMMARY
+          cat > fix_prompt.txt << 'FIX_EOF'
+          项目静态检查或测试失败。请读取以上错误信息，逐项修复：
+
+          1. 修复代码格式 / 类型错误 / 测试失败
+          2. 运行 `black . --line-length 100 && isort .`
+          3. 运行 `pytest tests/ -q` 确认通过
+          4. 重复直到全部绿色
+
+          遵循 .reasonix/commands/fix-bug.md 的修复流程。
+          FIX_EOF
+          npx reasonix code --preset max --task "$(cat fix_prompt.txt)"
+        shell: bash
+
+      # ── 9. 配置 Git 身份 ─────────────────────────────────
+      - name: Configure Git
+        run: |
+          git config --global user.name "Reasonix-AI-Developer"
+          git config --global user.email "ai-developer@github.com"
+
+      # ── 10. 创建 Pull Request ────────────────────────────
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            feat: ${{ github.event.issue.title }}
+
+            🤖 Auto-generated by Reasonix + DeepSeek
+            Closes #${{ github.event.issue.number }}
+          branch: "reasonix-dev/issue-${{ github.event.issue.number }}"
+          title: "🤖 ${{ github.event.issue.title }}"
+          body: |
+            ## 🤖 AI 自动生成
+
+            根据 Issue #${{ github.event.issue.number }} 自动开发。
+
+            ### 验证状态
+            - [ ] black/isort/mypy 通过
+            - [ ] pytest 通过
+            - [ ] 覆盖率 ≥ 70%
+
+            请审查代码后合并。
+          labels: |
+            ai-generated
+            ready-for-review
+
+      # ── 11. 回复 Issue ──────────────────────────────────
+      - name: Reply to Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNum = context.payload.issue.number;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `🤖 **Reasonix** 已完成开发任务！\n\n请前往 Pull Request 查看代码并审查：\n#${prNum}`
+            });
