@@ -1,4 +1,4 @@
-name: Reasonix DeepSeek Core Review
+name: Reasonix PR Review + Auto-fix
 
 on:
   pull_request:
@@ -7,47 +7,177 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
-  reasonix_review:
+  review_and_fix:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. 检出代码并获取完整的 Git 历史（以便 Reasonix 读取上下文）
+      # ── 1. 检出代码 + 获取完整 Git 历史 ──────────────────
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. 设置 Node 环境（Reasonix 1.0+ 的分发机制依然完美支持 npx 一键调用）
+      # ── 2. 设置 Python + Node ────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 3. 将 Git Diff 暂存为文件，供 Reasonix 智能体分析
+      # ── 3. 缓存 HuggingFace 模型 ──────────────────────────
+      - name: Cache HuggingFace Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ hashFiles('requirements.txt') }}
+          restore-keys: hf-models-
+
+      # ── 4. 安装依赖 ──────────────────────────────────────
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 5. 生成 PR Diff ──────────────────────────────────
       - name: Generate Code Diff
         run: |
           git diff origin/${{ github.base_ref }}...HEAD > pr_changes.diff
+          echo "Diff size: $(wc -l < pr_changes.diff) lines"
 
-      # 4. 运行 Reasonix 智能体进行深度推理审查
-      - name: Run Reasonix Agent
+      # ── 6. 阶段一：Code Review ───────────────────────────
+      - name: Run Code Review
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          cat > reasonix_prompt.txt << 'PROMPT_END'
-          请按以下项目级审查标准 review PR 代码变更：
+          mkdir -p .temp
+          cat > review_prompt.txt << 'PROMPT_END'
+          # PR 代码审查
+
+          请严格按以下项目级审查标准 review 下方 diff。
 
           ## 审查标准
           PROMPT_END
-          cat .reasonix/commands/code-review.md >> reasonix_prompt.txt
-          printf '\n\n## 代码变更 Diff\n\n' >> reasonix_prompt.txt
-          cat pr_changes.diff >> reasonix_prompt.txt
-          
-          npx reasonix run --model deepseek-v4-pro --effort medium "$(cat reasonix_prompt.txt)" > reasonix_report.md
+          cat .reasonix/commands/code-review.md >> review_prompt.txt
+          printf '\n\n## 代码变更 Diff\n\n' >> review_prompt.txt
+          cat pr_changes.diff >> review_prompt.txt
 
-      # 5. 将 Reasonix 的推理审查报告自动以评论形式发表在 PR 下面
-      - name: Post Comment to PR
+          npx reasonix run \
+            --model deepseek-v4-pro \
+            --effort high \
+            --budget 0.5 \
+            "$(cat review_prompt.txt)" > .temp/review-report.md
+
+      # ── 7. 发布审查报告到 PR ────────────────────────────
+      - name: Post Review Comment
         uses: mshick/github-actions-comment-on-pr@v3
         with:
-          file_path: "reasonix_report.md"
+          file_path: ".temp/review-report.md"
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 8. 阶段二：根据 review 自动修复 ──────────────────
+      - name: Auto-fix Based on Review
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          cat > fix_prompt.txt << 'PROMPT_END'
+          # 根据审查结果自动修复
+
+          下面是代码审查报告和 PR 代码变更。请：
+          1. 读取审查报告中的每个问题
+          2. 按 fix-bug.md 流程修复代码
+          3. 修复后运行 black . --line-length 100 && isort .
+          4. 运行 pytest tests/ -q -m "not slow"
+          5. 如果测试失败，读取报错信息继续修复
+          6. 重复直到全部绿色
+          7. 最终输出改了什么文件
+
+          ## 修复规范
+          PROMPT_END
+          cat .reasonix/commands/fix-bug.md >> fix_prompt.txt
+          printf '\n\n## 审查报告\n\n' >> fix_prompt.txt
+          cat .temp/review-report.md >> fix_prompt.txt
+          printf '\n\n## 代码变更 Diff\n\n' >> fix_prompt.txt
+          cat pr_changes.diff >> fix_prompt.txt
+
+          npx reasonix run \
+            --model deepseek-v4-pro \
+            --effort high \
+            --budget 0.5 \
+            "$(cat fix_prompt.txt)"
+
+      # ── 9. 验证修复后代码 ────────────────────────────────
+      - name: Verify Fixes
+        id: verify
+        continue-on-error: true
+        run: |
+          black . --line-length 100 --check
+          isort . --check-only
+          pytest tests/ -q -m "not slow" --cov=src --cov-report=term-missing | tail -15
+
+      # ── 10. 第二轮修复（验证失败时） ────────────────────
+      - name: Round 2 Fix if Needed
+        if: steps.verify.outcome == 'failure'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          echo "Tests still failing, running second round of fixes..." >> $GITHUB_STEP_SUMMARY
+          cat > repair2.txt << 'PROMPT_END'
+          修复仍未通过全部检查。请：
+          1. 运行 black . --line-length 100 && isort .
+          2. 运行 pytest tests/ -q -m "not slow"
+          3. 修复所有失败项
+          4. 重复直到全部绿色
+          PROMPT_END
+          npx reasonix run \
+            --model deepseek-v4-pro \
+            --effort high \
+            --budget 0.3 \
+            "$(cat repair2.txt)"
+
+          # 再验证一次
+          black . --line-length 100 --check
+          isort . --check-only
+          pytest tests/ -q -m "not slow"
+
+      # ── 11. 提交并推送修复到 PR 分支 ────────────────────
+      - name: Commit and Push Fixes
+        run: |
+          git config --global user.name "Reasonix-AI-Developer"
+          git config --global user.email "ai-developer@github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "fix: auto-fix review issues
+
+            🤖 Auto-fix by Reasonix + DeepSeek"
+            git push origin HEAD:${{ github.head_ref }}
+            echo "FIXES_PUSHED=true" >> $GITHUB_ENV
+          else
+            echo "FIXES_PUSHED=false" >> $GITHUB_ENV
+            echo "No changes after fix." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── 12. 发布修复摘要到 PR ───────────────────────────
+      - name: Post Fix Summary Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pushed = process.env.FIXES_PUSHED === 'true';
+            const body = pushed
+              ? "🤖 **Reasonix** 已根据审查报告自动修复代码并推送。\n\n请刷新查看最新 Diff。"
+              : "🤖 **Reasonix** 审查完毕，未发现需要自动修复的问题。";
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
