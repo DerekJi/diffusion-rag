@@ -140,7 +140,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
+          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat fix_prompt.txt)"
 
       # ── 8. 验证修复结果 ──────────────────────────────────
       - name: Run Tests After Fix
@@ -169,7 +169,7 @@ jobs:
           5. 运行 pytest tests/ -q -m "not slow"
           6. 重复直到全绿
           PROMPT_END
-          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat repair_prompt.txt)"
+          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat repair_prompt.txt)"
 
           # 再跑一次验证
           black . --line-length 100 --check

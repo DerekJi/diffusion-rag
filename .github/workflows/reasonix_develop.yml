@@ -134,7 +134,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           MODEL="${{ steps.config.outputs.model }}"
-          npx reasonix code --model "$MODEL" -yolo --task "$(cat task_prompt.txt)"
+          npx reasonix run --model "$MODEL" --effort ${{ steps.config.outputs.level }} "$(cat task_prompt.txt)"
         shell: bash
 
       # ── 8. 代码验证 ───────────────────────────────────────
@@ -167,7 +167,7 @@ jobs:
 
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
-          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
+          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat fix_prompt.txt)"
         shell: bash
 
       # ── 10. 配置 Git 身份 ─────────────────────────────────
