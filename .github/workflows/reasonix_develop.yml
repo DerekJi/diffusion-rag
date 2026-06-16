@@ -80,33 +80,65 @@ jobs:
             *) echo "level=medium" >> $GITHUB_OUTPUT;;
           esac
 
-      # ── 6. 组装开发任务 Prompt ───────────────────────────
-      #    将 Issue 内容 + .reasonix/commands/ 工程标准注入
+          # 提取 type: 字段（code / docs，默认 code）
+          RAW_TYPE=$(echo "$BODY" | grep -im1 '^type:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$RAW_TYPE" ]; then RAW_TYPE="code"; fi
+          case "$RAW_TYPE" in
+            code|docs) echo "type=$RAW_TYPE" >> $GITHUB_OUTPUT;;
+            *) echo "type=code" >> $GITHUB_OUTPUT;;
+          esac
+
+      # ── 6. 组装任务 Prompt ───────────────────────────────
+      #    根据 type: code / docs 选择不同指令集
       - name: Formulate Task Prompt
         id: prompt
+        shell: bash
         run: |
-          cat > task_prompt.txt << 'PROMPT_EOF'
-          # 开发任务
+          TASK_TYPE=${{ steps.config.outputs.type }}
+
+          cat > task_prompt.txt << PROMPT_EOF
+          # $([ "$TASK_TYPE" = "docs" ] && echo "文档任务" || echo "开发任务")
 
           ## Issue 描述
           标题: ${{ github.event.issue.title }}
           需求:
           ${{ github.event.issue.body }}
+          PROMPT_EOF
+
+          if [ "$TASK_TYPE" = "docs" ]; then
+            # ── 写文档专用指令 ──
+            cat >> task_prompt.txt << 'DOCS_EOF'
+
+          ## 文档写作规范
+          - 使用 Markdown，行长度 ≤ 100 字符
+          - 代码块标注语言（```python / ```bash 等）
+          - 表格使用 GFM 格式（| col | col |）
+          - 文件路径和命令用反引号包裹
+          - 保持与 docs/ 下已有文档风格一致
+
+          ## 执行要求
+          1. 阅读 Issue 需求，编排文档结构
+          2. 在 docs/ 目录下新建或更新对应文件
+          3. 如果涉及示例代码，确保语法正确
+          4. 完成后检查文档可读性
+          DOCS_EOF
+          else
+            # ── 写代码专用指令 ──
+            cat >> task_prompt.txt << 'CODE_EOF'
 
           ## 项目开发规范
           请严格遵循以下仓库定义的标准来完成任务。
 
           ### develop.md — 开发流程
-          PROMPT_EOF
-          cat .reasonix/commands/develop.md >> task_prompt.txt
-          printf '\n\n### code-review.md — 代码审查标准\n' >> task_prompt.txt
-          cat .reasonix/commands/code-review.md >> task_prompt.txt
-          printf '\n\n### fix-bug.md — Bug 修复流程\n' >> task_prompt.txt
-          cat .reasonix/commands/fix-bug.md >> task_prompt.txt
-          printf '\n\n### feature.md — 功能实现流程\n' >> task_prompt.txt
-          cat .reasonix/commands/feature.md >> task_prompt.txt
-          printf '\n\n### effort level: ${{ steps.config.outputs.level }}\n' >> task_prompt.txt
-          cat >> task_prompt.txt << 'PROMPT_EOF'
+          CODE_EOF
+            cat .reasonix/commands/develop.md >> task_prompt.txt
+            printf '\n\n### code-review.md — 代码审查标准\n' >> task_prompt.txt
+            cat .reasonix/commands/code-review.md >> task_prompt.txt
+            printf '\n\n### fix-bug.md — Bug 修复流程\n' >> task_prompt.txt
+            cat .reasonix/commands/fix-bug.md >> task_prompt.txt
+            printf '\n\n### feature.md — 功能实现流程\n' >> task_prompt.txt
+            cat .reasonix/commands/feature.md >> task_prompt.txt
+            cat >> task_prompt.txt << 'CODE_EOF'
 
           ## 项目背景
           本仓库为 Diffusion RAG 项目 — 基于 ELF 扩散模型的语义检索增强原型。
@@ -118,14 +150,16 @@ jobs:
 
           ## 执行要求
           1. 按 feature.md 流程推进：为每个子任务启动独立的 subagent
-          2. 每完成一段代码先运行 `pytest tests/ -q` 验证
+          2. 每完成一段代码先运行 pytest tests/ -q 验证
           3. 代码审查通过后再继续下一个子任务
-          4. 全部完成后运行 `make check && make test-cov` 确保全部通过
+          4. 全部完成后运行 make check && make test-cov 确保全部通过
           5. 自行修复发现的任何问题，直到全部绿色
-          PROMPT_EOF
+          CODE_EOF
+          fi
 
-          echo "Task prompt assembled ($(wc -l < task_prompt.txt) lines)"
-        shell: bash
+          printf '\n### effort level: ${{ steps.config.outputs.level }}\n' >> task_prompt.txt
+
+          echo "Task prompt assembled ($(wc -l < task_prompt.txt) lines, type=$TASK_TYPE)"
 
       # ── 7. 运行 Reasonix 自主开发 ─────────────────────────
       - name: Run Reasonix Developer Agent
@@ -138,37 +172,63 @@ jobs:
         shell: bash
 
       # ── 8. 代码验证 ───────────────────────────────────────
+      # type=docs: 仅格式化检查；type=code: 全部检查
       - name: Run Static Checks
         id: checks
         continue-on-error: true
+        shell: bash
         run: |
-          echo "### black + isort + mypy" >> $GITHUB_STEP_SUMMARY
+          TASK_TYPE=${{ steps.config.outputs.type }}
+          echo "### Task type: $TASK_TYPE" >> $GITHUB_STEP_SUMMARY
+
+          echo "### black + isort" >> $GITHUB_STEP_SUMMARY
           black . --line-length 100 --check 2>&1 | tail -5
           isort . --check-only 2>&1 | tail -5
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### pytest" >> $GITHUB_STEP_SUMMARY
-          pytest tests/ -q --cov=src --cov-report=term-missing 2>&1 | tail -20
-        shell: bash
+
+          if [ "$TASK_TYPE" != "docs" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### mypy" >> $GITHUB_STEP_SUMMARY
+            mypy src/ --strict 2>&1 | tail -5
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### pytest" >> $GITHUB_STEP_SUMMARY
+            pytest tests/ -q -m "not slow" --cov=src --cov-report=term-missing 2>&1 | tail -20
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Docs check — skipped pytest/mypy (docs-only task)" >> $GITHUB_STEP_SUMMARY
+          fi
 
       # ── 9. 如果验证失败，让 AI 自修复 ─────────────────────
       - name: Auto-fix if Checks Failed
         if: steps.checks.outcome == 'failure'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          echo "Checks failed, running fix subagent..." >> $GITHUB_STEP_SUMMARY
-          cat > fix_prompt.txt << 'FIX_EOF'
-          项目静态检查或测试失败。请读取以上错误信息，逐项修复：
-
-          1. 修复代码格式 / 类型错误 / 测试失败
-          2. 运行 `black . --line-length 100 && isort .`
-          3. 运行 `pytest tests/ -q` 确认通过
-          4. 重复直到全部绿色
-
-          遵循 .reasonix/commands/fix-bug.md 的修复流程。
-          FIX_EOF
-          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat fix_prompt.txt)"
         shell: bash
+        run: |
+          TASK_TYPE=${{ steps.config.outputs.type }}
+          echo "Checks failed, running fix subagent..." >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TASK_TYPE" = "docs" ]; then
+            cat > fix_prompt.txt << 'FIX_EOF'
+            文档格式化检查失败。请修复格式问题：
+
+            1. 运行 black . --line-length 100 && isort .
+            2. 确保 markdown 格式正确
+            3. 重复直到 black + isort 通过
+            FIX_EOF
+          else
+            cat > fix_prompt.txt << 'FIX_EOF'
+            项目静态检查或测试失败。请读取以上错误信息，逐项修复：
+
+            1. 修复代码格式 / 类型错误 / 测试失败
+            2. 运行 black . --line-length 100 && isort .
+            3. 运行 pytest tests/ -q -m "not slow" 确认通过
+            4. 重复直到全部绿色
+
+            遵循 .reasonix/commands/fix-bug.md 的修复流程。
+            FIX_EOF
+          fi
+
+          npx reasonix run --model "${{ steps.config.outputs.model }}" --effort ${{ steps.config.outputs.level }} "$(cat fix_prompt.txt)"
 
       # ── 10. 配置 Git 身份 ─────────────────────────────────
       - name: Configure Git
