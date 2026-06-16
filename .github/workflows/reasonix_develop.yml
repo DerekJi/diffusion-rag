@@ -50,7 +50,32 @@ jobs:
           pip install -r requirements.txt
         shell: bash
 
-      # ── 5. 组装开发任务 Prompt ───────────────────────────
+      # ── 5. 提取 Issue 中的 model level ──────────────────
+      # Issue body 中可写 level: low / medium / high
+      # 默认 medium → deepseek-v4-pro, 默认加 -yolo (CI 非交互)
+      - name: Extract Model Level
+        id: model
+        shell: bash
+        run: |
+          BODY='${{ github.event.issue.body }}'
+          LEVEL=$(echo "$BODY" | grep -i '^level:' | head -1 | sed 's/.*:[[:space:]]*//i' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$LEVEL" ]; then LEVEL="medium"; fi
+          case "$LEVEL" in
+            low|flash)
+              echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT
+              echo "Selected: low (deepseek-v4-flash) — cheap & fast";;
+            medium|pro)
+              echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT
+              echo "Selected: medium (deepseek-v4-pro) — balanced";;
+            high)
+              echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT
+              echo "Selected: high (deepseek-v4-pro) — max quality";;
+            *)
+              echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT
+              echo "Unknown level \"$LEVEL\", fallback to medium (deepseek-v4-pro)";;
+          esac
+
+      # ── 6. 组装开发任务 Prompt ───────────────────────────
       #    将 Issue 内容 + .reasonix/commands/ 工程标准注入
       - name: Formulate Task Prompt
         id: prompt
@@ -96,16 +121,17 @@ jobs:
           echo "Task prompt assembled ($(wc -l < task_prompt.txt) lines)"
         shell: bash
 
-      # ── 6. 运行 Reasonix 自主开发 ─────────────────────────
+      # ── 7. 运行 Reasonix 自主开发 ─────────────────────────
       - name: Run Reasonix Developer Agent
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          npx reasonix code --model deepseek-v4-pro --task "$(cat task_prompt.txt)"
+          MODEL="${{ steps.model.outputs.model }}"
+          npx reasonix code --model "$MODEL" -yolo --task "$(cat task_prompt.txt)"
         shell: bash
 
-      # ── 7. 代码验证 ───────────────────────────────────────
+      # ── 8. 代码验证 ───────────────────────────────────────
       - name: Run Static Checks
         id: checks
         continue-on-error: true
@@ -118,7 +144,7 @@ jobs:
           pytest tests/ -q --cov=src --cov-report=term-missing 2>&1 | tail -20
         shell: bash
 
-      # ── 8. 如果验证失败，让 AI 自修复 ─────────────────────
+      # ── 9. 如果验证失败，让 AI 自修复 ─────────────────────
       - name: Auto-fix if Checks Failed
         if: steps.checks.outcome == 'failure'
         env:
@@ -135,16 +161,16 @@ jobs:
 
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
-          npx reasonix code --model deepseek-v4-pro --task "$(cat fix_prompt.txt)"
+          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
         shell: bash
 
-      # ── 9. 配置 Git 身份 ─────────────────────────────────
+      # ── 10. 配置 Git 身份 ─────────────────────────────────
       - name: Configure Git
         run: |
           git config --global user.name "Reasonix-AI-Developer"
           git config --global user.email "ai-developer@github.com"
 
-      # ── 10. 创建 Pull Request ────────────────────────────
+      # ── 11. 创建 Pull Request ────────────────────────────
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:
@@ -171,7 +197,7 @@ jobs:
             ai-generated
             ready-for-review
 
-      # ── 11. 回复 Issue ──────────────────────────────────
+      # ── 12. 回复 Issue ──────────────────────────────────
       - name: Reply to Issue
         uses: actions/github-script@v7
         with:

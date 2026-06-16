@@ -71,7 +71,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 6. 组装修复 Prompt ───────────────────────────────
+      # ── 6. 提取 PR review 中的 model level ─────────────
+      # PR issue body 中可写 level: low / medium / high
+      # 默认 medium → deepseek-v4-pro, 默认加 -yolo
+      - name: Extract Model Level
+        id: model
+        shell: bash
+        run: |
+          ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body --jq .body 2>/dev/null || echo "")
+          LEVEL=$(echo "$ISSUE_BODY" | grep -i '^level:' | head -1 | sed 's/.*:[[:space:]]*//i' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$LEVEL" ]; then LEVEL="medium"; fi
+          case "$LEVEL" in
+            low|flash) echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT;;
+            medium|pro|high) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
+            *) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
+          esac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 7. 组装修复 Prompt ───────────────────────────────
       #    提取 /fix 后面的意见 + 注入工程规范
       - name: Formulate Fix Prompt
         id: prompt
@@ -118,7 +136,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          npx reasonix code --model deepseek-v4-pro --task "$(cat fix_prompt.txt)"
+          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
 
       # ── 8. 验证修复结果 ──────────────────────────────────
       - name: Run Tests After Fix
@@ -147,7 +165,7 @@ jobs:
           5. 运行 pytest tests/ -q -m "not slow"
           6. 重复直到全绿
           PROMPT_END
-          npx reasonix code --model deepseek-v4-pro --task "$(cat repair_prompt.txt)"
+          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat repair_prompt.txt)"
 
           # 再跑一次验证
           black . --line-length 100 --check
