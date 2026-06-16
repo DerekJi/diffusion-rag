@@ -6,6 +6,7 @@
 import time
 from dataclasses import dataclass, field
 
+from datasets import Dataset
 from datasets import load_dataset as hf_load_dataset
 
 from src.utils.logger import get_logger
@@ -61,53 +62,10 @@ def load_dataset(name: str, cache_dir: str | None = None) -> DatasetTriple:
     hf_name = _DATASET_MAP[name]
     logger.info("加载数据集 %s (HuggingFace: %s)", name, hf_name)
 
-    last_error: Exception | None = None
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            ds = hf_load_dataset(hf_name, cache_dir=cache_dir, trust_remote_code=True)
-            break
-        except Exception as e:
-            last_error = e
-            logger.warning("数据集下载失败 (尝试 %d/%d): %s", attempt, _MAX_RETRIES, e)
-            if attempt < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-    else:
-        raise RuntimeError(f"数据集 {hf_name} 下载失败，已重试 {_MAX_RETRIES} 次: {last_error}")
-
-    # 转换为统一格式
     triple = DatasetTriple()
-
-    # 查询
-    for split in (
-        ds.get("queries", {}).values()
-        if hasattr(ds.get("queries", {}), "values")
-        else [ds["queries"]] if "queries" in ds else []
-    ):
-        for row in split:
-            triple.queries[row["_id"]] = row["text"]
-
-    # 语料
-    for split in (
-        ds.get("corpus", {}).values()
-        if hasattr(ds.get("corpus", {}), "values")
-        else [ds["corpus"]] if "corpus" in ds else []
-    ):
-        for row in split:
-            triple.corpus[row["_id"]] = row["text"]
-
-    # 相关性标注
-    for split in (
-        ds.get("qrels", {}).values()
-        if hasattr(ds.get("qrels", {}), "values")
-        else [ds["qrels"]] if "qrels" in ds else []
-    ):
-        for row in split:
-            qid = row["query-id"]
-            did = row["corpus-id"]
-            score = row["score"]
-            if qid not in triple.qrels:
-                triple.qrels[qid] = {}
-            triple.qrels[qid][did] = int(score)
+    _load_queries(triple, hf_name, cache_dir)
+    _load_corpus(triple, hf_name, cache_dir)
+    _load_qrels(triple, hf_name, cache_dir)
 
     logger.info(
         "  queries=%d, corpus=%d, qrels=%d",
@@ -116,6 +74,59 @@ def load_dataset(name: str, cache_dir: str | None = None) -> DatasetTriple:
         sum(len(v) for v in triple.qrels.values()),
     )
     return triple
+
+
+def _hf_load_with_retry(config_name: str, hf_name: str, cache_dir: str | None) -> Dataset:
+    """带重试的 HF 数据集加载。"""
+    last_error: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return hf_load_dataset(hf_name, config_name, cache_dir=cache_dir)
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "数据集 %s/%s 下载失败 (尝试 %d/%d): %s",
+                hf_name,
+                config_name,
+                attempt,
+                _MAX_RETRIES,
+                e,
+            )
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY)
+    raise RuntimeError(
+        f"数据集 {hf_name}/{config_name} 下载失败，已重试 {_MAX_RETRIES} 次: {last_error}"
+    )
+
+
+def _load_queries(triple: DatasetTriple, hf_name: str, cache_dir: str | None) -> None:
+    """加载 queries config。"""
+    ds = _hf_load_with_retry("queries", hf_name, cache_dir)
+    split = ds["queries"]
+    for row in split:
+        triple.queries[row["_id"]] = row["text"]
+
+
+def _load_corpus(triple: DatasetTriple, hf_name: str, cache_dir: str | None) -> None:
+    """加载 corpus config。"""
+    ds = _hf_load_with_retry("corpus", hf_name, cache_dir)
+    split = ds["corpus"]
+    for row in split:
+        triple.corpus[row["_id"]] = row["text"]
+
+
+def _load_qrels(triple: DatasetTriple, hf_name: str, cache_dir: str | None) -> None:
+    """加载 qrels（独立数据集，test split）。"""
+    qrels_name = hf_name + "-qrels"
+    ds = _hf_load_with_retry("default", qrels_name, cache_dir)
+    split = ds["test"]
+    for row in split:
+        qid = row["query-id"]
+        did = row["corpus-id"]
+        score = row["score"]
+        if qid not in triple.qrels:
+            triple.qrels[qid] = {}
+        triple.qrels[qid][did] = int(score)
 
 
 # Phase 2/3: consumed by fast debug test loops
