@@ -74,17 +74,22 @@ jobs:
       # ── 6. 提取 PR review 中的 model level ─────────────
       # PR issue body 中可写 level: low / medium / high
       # 默认 medium → deepseek-v4-pro, 默认加 -yolo
-      - name: Extract Model Level
-        id: model
+      - name: Extract Config
+        id: config
         shell: bash
         run: |
-          ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body --jq .body 2>/dev/null || echo "")
-          RAW=$(echo "$ISSUE_BODY" | grep -im1 '^level:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$RAW" ]; then RAW="medium"; fi
-          case "$RAW" in
-            pro|high|deepseek-v4-pro) echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT;;
-            *) echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT;;
-          esac
+          BODY=$(gh issue view ${{ github.event.issue.number }} --json body --jq .body 2>/dev/null || echo "")
+
+          # model: 字段
+          MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$MODEL" ]; then MODEL="deepseek-v4-flash"; fi
+          case "$MODEL" in pro|deepseek-v4-pro) MODEL="deepseek-v4-pro";; *) MODEL="deepseek-v4-flash";; esac
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
+
+          # level: 字段
+          RAW_LVL=$(echo "$BODY" | grep -im1 '^level:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$RAW_LVL" ]; then RAW_LVL="medium"; fi
+          case "$RAW_LVL" in low|medium|high) echo "level=$RAW_LVL" >> $GITHUB_OUTPUT;; *) echo "level=medium" >> $GITHUB_OUTPUT;; esac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -135,7 +140,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
-          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
+          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
 
       # ── 8. 验证修复结果 ──────────────────────────────────
       - name: Run Tests After Fix
@@ -164,7 +169,7 @@ jobs:
           5. 运行 pytest tests/ -q -m "not slow"
           6. 重复直到全绿
           PROMPT_END
-          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat repair_prompt.txt)"
+          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat repair_prompt.txt)"
 
           # 再跑一次验证
           black . --line-length 100 --check

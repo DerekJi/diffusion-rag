@@ -50,23 +50,34 @@ jobs:
           pip install -r requirements.txt
         shell: bash
 
-      # ── 5. 提取 Issue 中的 model level ──────────────────
-      # Issue body 中可写 level: low / medium / high
-      # 默认 medium → deepseek-v4-pro, 默认加 -yolo (CI 非交互)
-      - name: Extract Model Level
-        id: model
+      # ── 5. 提取 Issue 中的 model + level ────────────────
+      # 两个独立维度，均在 Issue body 中用 yaml 风格字段指定：
+      #   model: deepseek-v4-flash  (默认)
+      #   level: medium            (默认: low / medium / high)
+      # 默认加 -yolo (CI 非交互模式)
+      - name: Extract Config
+        id: config
         shell: bash
         run: |
           BODY='${{ github.event.issue.body }}'
-          RAW=$(echo "$BODY" | grep -im1 '^level:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$RAW" ]; then RAW="medium"; fi
-          case "$RAW" in
-            pro|high|deepseek-v4-pro)
-              echo "model=deepseek-v4-pro" >> $GITHUB_OUTPUT
-              echo "Selected: pro (deepseek-v4-pro) — max quality";;
-            *)
-              echo "model=deepseek-v4-flash" >> $GITHUB_OUTPUT
-              echo "Selected: flash (deepseek-v4-flash) — default";;
+
+          # 提取 model: 字段
+          MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$MODEL" ]; then MODEL="deepseek-v4-flash"; fi
+          case "$MODEL" in
+            pro|deepseek-v4-pro)
+              MODEL="deepseek-v4-pro";;
+            flash|deepseek-v4-flash|*)
+              MODEL="deepseek-v4-flash";;
+          esac
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
+
+          # 提取 level: 字段
+          RAW_LVL=$(echo "$BODY" | grep -im1 '^level:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$RAW_LVL" ]; then RAW_LVL="medium"; fi
+          case "$RAW_LVL" in
+            low|medium|high) echo "level=$RAW_LVL" >> $GITHUB_OUTPUT;;
+            *) echo "level=medium" >> $GITHUB_OUTPUT;;
           esac
 
       # ── 6. 组装开发任务 Prompt ───────────────────────────
@@ -94,6 +105,7 @@ jobs:
           cat .reasonix/commands/fix-bug.md >> task_prompt.txt
           printf '\n\n### feature.md — 功能实现流程\n' >> task_prompt.txt
           cat .reasonix/commands/feature.md >> task_prompt.txt
+          printf '\n\n### effort level: ${{ steps.config.outputs.level }}\n' >> task_prompt.txt
           cat >> task_prompt.txt << 'PROMPT_EOF'
 
           ## 项目背景
@@ -121,7 +133,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          MODEL="${{ steps.model.outputs.model }}"
+          MODEL="${{ steps.config.outputs.model }}"
           npx reasonix code --model "$MODEL" -yolo --task "$(cat task_prompt.txt)"
         shell: bash
 
@@ -155,7 +167,7 @@ jobs:
 
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
-          npx reasonix code --model "${{ steps.model.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
+          npx reasonix code --model "${{ steps.config.outputs.model }}" -yolo --task "$(cat fix_prompt.txt)"
         shell: bash
 
       # ── 10. 配置 Git 身份 ─────────────────────────────────
