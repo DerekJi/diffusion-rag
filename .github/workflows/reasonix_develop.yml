@@ -52,7 +52,7 @@ jobs:
 
       # ── 5. 提取 Issue 中的 model + level ────────────────
       # 两个独立维度，均在 Issue body 中用 yaml 风格字段指定：
-      #   model: deepseek-v4-flash  (默认)
+      #   model: deepseek-flash  (默认)
       #   level: medium            (默认: low / medium / high)
       # 默认加 -yolo (CI 非交互模式)
       - name: Extract Config

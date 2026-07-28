@@ -117,8 +117,9 @@ jobs:
             const emoji = (s) => s === 'success' ? '✅' : '❌';
             const label = (s) => s === 'success' ? '通过' : '失败';
             const allPass = fmt === 'success' && typ === 'success' && tst === 'success';
+            const passCount = (fmt === 'success' ? 1 : 0) + (typ === 'success' ? 1 : 0) + (tst === 'success' ? 1 : 0);
 
-            const body = `## 🔍 静态检查结果\n\n| 检查项 | 状态 |\n|--------|------|\n| ${emoji(fmt)} black + isort | ${label(fmt)} |\n| ${emoji(typ)} mypy (strict) | ${label(typ)} |\n| ${emoji(tst)} pytest --cov | ${label(tst)} |\n\n**${allPass ? '3/3' : '0/3'} 项通过**\n`;
+            const body = `## 🔍 静态检查结果\n\n| 检查项 | 状态 |\n|--------|------|\n| ${emoji(fmt)} black + isort | ${label(fmt)} |\n| ${emoji(typ)} mypy (strict) | ${label(typ)} |\n| ${emoji(tst)} pytest --cov | ${label(tst)} |\n\n**${passCount}/3 项通过**\n`;
 
             github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -168,7 +169,7 @@ jobs:
 
           if [ -n "$(git status --porcelain)" ]; then
             git add .
-            git commit -m "style: auto-fix static check issues
+            git commit -m "fix: auto-fix CI check failures
 
             🤖 Auto-fix by Reasonix + DeepSeek"
             git push origin ${{ github.head_ref }}

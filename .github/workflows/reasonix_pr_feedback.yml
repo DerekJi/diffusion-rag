@@ -73,7 +73,7 @@ jobs:
 
       # ── 6. 提取 PR review 中的 model level ─────────────
       # PR issue body 中可写 level: low / medium / high
-      # 默认 medium → deepseek-v4-pro, 默认加 -yolo
+      # 默认 medium → deepseek-pro, 默认加 -yolo
       - name: Extract Config
         id: config
         shell: bash
@@ -82,8 +82,8 @@ jobs:
 
           # model: 字段
           MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$MODEL" ]; then MODEL="deepseek-v4-flash"; fi
-          case "$MODEL" in pro|deepseek-v4-pro) MODEL="deepseek-v4-pro";; *) MODEL="deepseek-v4-flash";; esac
+          if [ -z "$MODEL" ]; then MODEL="deepseek-flash"; fi
+          case "$MODEL" in pro|deepseek-pro) MODEL="deepseek-pro";; *) MODEL="deepseek-flash";; esac
           echo "model=$MODEL" >> $GITHUB_OUTPUT
 
           # level: 字段
