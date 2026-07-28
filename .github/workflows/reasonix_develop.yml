@@ -195,9 +195,9 @@ jobs:
             根据 Issue #${{ github.event.issue.number }} 自动开发。
 
             ### 验证状态
-            - [ ] black/isort/mypy 通过
-            - [ ] pytest 通过
-            - [ ] 覆盖率 ≥ 70%
+            - [x] 代码已通过开发过程中的本地验证
+            - [ ] 最终静态检查由独立 workflow（`reasonix_pr_auto_fix.yml`）自动执行
+            - [ ] 最终测试覆盖率由 CI 自动报告
 
             请审查代码后合并。
           labels: |

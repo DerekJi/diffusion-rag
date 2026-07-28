@@ -29,7 +29,7 @@ jobs:
               per_page: 1
             });
             const author = commits[0]?.author?.login || '';
-            const isBot = author === 'github-actions[bot]' || author === 'reasonix-dev-bot';
+            const isBot = author === 'github-actions[bot]';
             core.setOutput('skip', isBot ? 'true' : 'false');
             core.setOutput('author', author);
 
@@ -90,13 +90,32 @@ jobs:
           echo "### pytest" >> $GITHUB_STEP_SUMMARY
           pytest tests/ -q -m "not slow" --cov=src --cov-report=term-missing 2>&1 | tail -20
 
-      # ── 7. 全部通过则跳过 ────────────────────────────────
+      # ── 7. 评论检查结果到 PR ────────────────────────────
+      - name: Post Check Results to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fmt = '${{ steps.checks.outcome }}';
+            const emoji = (s) => s === 'success' ? '✅' : '❌';
+            const label = (s) => s === 'success' ? '通过' : '失败';
+
+            const body = `## 🔍 静态检查结果\n\n| 检查项 | 状态 |\n|--------|------|\n| ${emoji(fmt)} black + isort | ${label(fmt)} |\n| ${emoji(fmt)} mypy (strict) | ${label(fmt)} |\n| ${emoji(fmt)} pytest --cov | ${label(fmt)} |\n\n**${fmt === 'success' ? '3/3' : '0/3'} 项通过**\n`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      # ── 8. 全部通过则跳过 ────────────────────────────────
       - name: Skip Fix if All Passed
         if: steps.checks.outcome == 'success'
         run: |
           echo "所有检查通过，无需修复。" >> $GITHUB_STEP_SUMMARY
 
-      # ── 8. 自动修复失败项 ────────────────────────────────
+      # ── 9. 自动修复失败项 ────────────────────────────────
       - name: Auto-fix with Reasonix
         if: |
           steps.check_author.outputs.skip != 'true' &&
@@ -118,9 +137,9 @@ jobs:
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
 
-          npx reasonix@1.2.0 run --model "deepseek-v4-flash" "$(cat fix_prompt.txt)"
+          npx reasonix@1.2.0 run --model "deepseek-flash" "$(cat fix_prompt.txt)"
 
-      # ── 9. 提交并推送修复 ────────────────────────────────
+      # ── 10. 提交并推送修复 ───────────────────────────────
       - name: Commit and Push Fixes
         if: |
           steps.check_author.outputs.skip != 'true' &&
@@ -142,21 +161,18 @@ jobs:
             echo "修复未产生代码变更。" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # ── 10. 评论 PR ─────────────────────────────────────
-      - name: Post Summary to PR
+      # ── 11. 评论修复结果 ────────────────────────────────
+      - name: Post Auto-fix Result
         if: |
-          always() &&
-          steps.check_author.outputs.skip != 'true'
+          steps.check_author.outputs.skip != 'true' &&
+          steps.checks.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
-            const outcome = '${{ steps.checks.outcome }}';
             const changed = process.env.CHANGED;
 
             let body;
-            if (outcome === 'success') {
-              body = '✅ **Auto-fix**: 所有静态检查通过，无需修复。';
-            } else if (changed === 'true') {
+            if (changed === 'true') {
               body = '🔧 **Auto-fix**: 已自动修复检查失败项并推送，请刷新查看最新 Diff。';
             } else {
               body = '⚠️ **Auto-fix**: 检查失败但自动修复未产生变更，请人工介入检查。';

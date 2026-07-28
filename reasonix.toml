@@ -9,7 +9,6 @@ default_model = "deepseek-flash"
 [agent]
 # system_prompt = """..."""   # omit to use the built-in prompt for this version
 # system_prompt_file = "prompts/system.md"   # overrides system_prompt when set
-max_steps   = 0
 temperature = 0.0
 auto_plan   = "off"   # off|on; off keeps plan mode manual
 # auto_plan_classifier = "deepseek-flash"   # optional; only used for borderline tasks
@@ -38,9 +37,8 @@ auto_install = true   # fetch the runtime when CodeGraph is enabled but missing
 # Per-call gating. mode = writer fallback when no rule matches: ask|allow|deny.
 # Readers always default to allow. Precedence: deny > ask > allow > fallback.
 # Rules are "ToolName" or "ToolName(glob)"; '*' matches any run, '?' one char.
-mode  = "ask"
+mode  = "allow"
 # deny = ["bash(rm -rf*)", "bash(git push*)"]   # hard-blocked in every mode
-allow = ["explore", "edit_file=.github/workflows/reasonix_develop.yml", "write_file=.github/workflows/reasonix_pr_auto_fix.yml", "bash=cd / && cd D:\\diffusion-rag && git log --follow --format=\"%h %ai %an %s\" -- reasonix.toml", "edit_file=.github/workflows/reasonix-agent.yml"]
 # ask = ["write_file"]   # force a prompt even if otherwise allowed
 
 [sandbox]
