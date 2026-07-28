@@ -52,4 +52,4 @@ htmlcov/
 *.log
 
 # temp
-.temp/
+.temp/package-lock.json

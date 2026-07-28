@@ -149,7 +149,7 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 | 10. Commit & Push | 修复变更提交并推送到 PR 分支 |
 | 11. Post Result | 评论修复结果（成功/需人工介入） |
 
-> 此 workflow 继承了原 `reasonix_pr_static_checks.yml` 的评论功能，合并为一个 workflow 避免并行竞态。
+> 此 workflow 将格式检查、类型检查、测试分别独立报告，避免单一状态变量误导。
 
 ### 3.3 `reasonix-agent.yml` — PR 审查 + 自动修复
 

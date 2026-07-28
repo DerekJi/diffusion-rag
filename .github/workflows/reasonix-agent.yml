@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write
@@ -70,7 +74,7 @@ jobs:
           cat pr_changes.diff >> review_prompt.txt
 
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat review_prompt.txt)" > .temp/review-report.md
 
       # ── 7. 发布审查报告到 PR ────────────────────────────
@@ -117,7 +121,7 @@ jobs:
           cat pr_changes.diff >> fix_prompt.txt
 
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat fix_prompt.txt)"
 
       # ── 9. 验证修复后代码 ────────────────────────────────
@@ -144,7 +148,7 @@ jobs:
           4. 重复直到全部绿色
           PROMPT_END
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat repair2.txt)"
 
           # 再验证一次

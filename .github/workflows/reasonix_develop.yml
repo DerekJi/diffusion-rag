@@ -63,12 +63,12 @@ jobs:
 
           # 提取 model: 字段
           MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$MODEL" ]; then MODEL="deepseek-v4-flash"; fi
+          if [ -z "$MODEL" ]; then MODEL="deepseek-flash"; fi
           case "$MODEL" in
-            pro|deepseek-v4-pro)
-              MODEL="deepseek-v4-pro";;
-            flash|deepseek-v4-flash|*)
-              MODEL="deepseek-v4-flash";;
+            pro|deepseek-pro)
+              MODEL="deepseek-pro";;
+            flash|deepseek-flash|*)
+              MODEL="deepseek-flash";;
           esac
           echo "model=$MODEL" >> $GITHUB_OUTPUT
 
@@ -195,7 +195,7 @@ jobs:
             根据 Issue #${{ github.event.issue.number }} 自动开发。
 
             ### 验证状态
-            - [x] 代码已通过开发过程中的本地验证
+            - [ ] 代码已由 Reasonix 生成，待独立 workflow 验证
             - [ ] 最终静态检查由独立 workflow（`reasonix_pr_auto_fix.yml`）自动执行
             - [ ] 最终测试覆盖率由 CI 自动报告
 
