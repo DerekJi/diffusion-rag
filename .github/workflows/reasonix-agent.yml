@@ -75,10 +75,21 @@ jobs:
 
       # ── 7. 发布审查报告到 PR ────────────────────────────
       - name: Post Review Comment
-        uses: mshick/github-actions-comment-on-pr@v3
+        uses: actions/github-script@v7
         with:
-          file_path: ".temp/review-report.md"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('.temp/review-report.md', 'utf8');
+            const body = report.length > 0
+              ? report
+              : "🤖 **Reasonix** 审查完毕，未发现需要报告的问题。";
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
 
       # ── 8. 阶段二：根据 review 自动修复 ──────────────────
       - name: Auto-fix Based on Review
