@@ -6,6 +6,8 @@ on:
     types: [opened, synchronize]
 
 concurrency:
+  # 与 reasonix-agent.yml 共享同一 group，防止两个 workflow 同时
+  # push 到同一 PR 分支导致 git 竞态冲突
   group: pr-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 

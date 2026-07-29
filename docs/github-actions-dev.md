@@ -126,9 +126,10 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 | 5. Extract Config | 从 Issue body 提取 `model:`、`level:`、`type:` |
 | 6. Formulate Prompt | 组装任务 Prompt，注入 `.reasonix/commands/` 规范 |
 | 7. `reasonix run` | AI 根据 Issue 开发代码 |
-| 8. Git Config | 设置机器人身份 |
-| 9. Create PR | 使用 `peter-evans/create-pull-request` 创建 PR |
-| 10. Reply | 在 Issue 回复完成信息 |
+| 8. Format Check & Fix | `black + isort` 自动格式化 |
+| 9. Git Config | 设置机器人身份 |
+| 10. Create PR | 使用 `peter-evans/create-pull-request` 创建 PR |
+| 11. Reply | 在 Issue 回复完成信息 |
 
 > **注意**：验证与自动修复已拆分为独立 workflow（`reasonix_pr_auto_fix.yml`），PR 创建后自动触发。
 
