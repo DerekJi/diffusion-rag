@@ -24,7 +24,9 @@ class Retriever:
         """
         self._indexer = indexer
 
-    def search(self, query_vector: NDArray[np.float32], k: int = 10) -> tuple[list[str], list[float]]:
+    def search(
+        self, query_vector: NDArray[np.float32], k: int = 10
+    ) -> tuple[list[str], list[float]]:
         """检索 top-k 结果。
 
         Args:

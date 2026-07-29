@@ -5,7 +5,6 @@
 """
 
 import numpy as np
-from numpy.typing import NDArray
 import torch
 from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
