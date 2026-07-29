@@ -1,11 +1,11 @@
 # 开发任务
 
 ## Issue 描述
-标题: Phase 2.2: 扩散接口 + CFG
+标题: Phase 2.3: Pipeline 集成 + 测试
 需求:
-实现 src/elf/diffusion.py 中的 add_noise / denoise / cfg_guide。
+实现 src/elf/pipeline.py 整合编码器+扩散+CFG 的完整链路。
 
-验收：单元测试覆盖扩散正反向 + CFG scale 边界
+验收：全部 8+ 测试通过 + make check 通过
 
 ## 项目开发规范
 请严格遵循以下仓库定义的标准来完成任务。

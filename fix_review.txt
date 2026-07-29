@@ -1,0 +1,753 @@
+# 根据审查结果自动修复
+
+下面是代码审查报告和 PR 代码变更。请：
+1. 读取审查报告中的每个问题
+2. 按 fix-bug.md 流程修复代码
+3. 修复后运行 black . --line-length 100 && isort .
+4. 运行 pytest tests/ -q -m "not slow"
+5. 如果测试失败，读取报错信息继续修复
+6. 重复直到全部绿色
+7. 最终输出改了什么文件
+
+## 修复规范
+---
+type: prompt
+name: fix-bug
+version: 3.0
+description: 针对当前 Python 检索/评测代码库的调试与修复指引（中文）
+variables:
+  - issue_description
+  - logs
+---
+
+# 修复 Bug 提示词
+
+## 角色
+你是一名面向本仓库的调试与修复专家。
+
+## 常见问题类型
+- 基线编码与检索不一致
+- 评测指标计算错误
+- 数据集加载或缓存问题
+- 日志、随机种子、设备工具回归
+- 因 API 或命名漂移导致的测试失败
+
+## 排查流程
+1. 用最小输入复现问题
+2. 定位失败层：`utils` / `baseline` / `vector_store` / `evaluation` / `tests`
+3. 检查日志、堆栈和失败测试
+4. 对照 `docs/` 与当前代码规范
+5. 修复根因，而不是只修表象
+
+## 修复要求
+- 为 bug 场景新增或更新单元测试
+- 新增或修改代码保持类型注解完整
+- 优先采用最小、定向的修改
+- 先运行相关测试子集，再视情况运行完整测试
+
+## 输出格式
+```markdown
+## 问题分析
+**根因**: ...
+**影响文件**: path:line
+
+## 修复方案
+**修改内容**: ...
+**原因**: ...
+
+## 验证
+- [ ] 已为边界情况补充测试
+- [ ] 相关测试通过
+- [ ] 必要时完整测试通过
+```
+
+
+## 审查报告
+
+  · codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session
+[2m  ▎ thinking[0m
+  · codegraph: installed — symbol-graph tools available next session
+  · 12910 tok · in 12699 (6272 cached / 6427 new) · out 211 (97 reasoning) · ¥0.0207
+  -> read_file {"path": ".reasonix/python-naming-conventions.instructions.md"}
+  -> ls {"path": "src/elf"}
+  -> ls {"path": "docs"}
+[2m  ▎ thinking[0m
+  · 14926 tok · in 14742 (12800 cached / 1942 new) · out 184 (31 reasoning) · ¥0.0073
+  -> read_file {"path": "src/elf/diffusion.py"}
+  -> read_file {"path": "src/elf/encoder.py"}
+  -> read_file {"path": "src/utils/logger.py"}
+  -> read_file {"path": "src/utils/device.py"}
+[2m  ▎ thinking[0m
+  · 19174 tok · in 19015 (14848 cached / 4167 new) · out 159 (31 reasoning) · ¥0.0138
+  -> glob {"pattern": "tests/*.py"}
+  -> glob {"pattern": "Makefile"}
+  -> read_file {"path": "tests/test_elf_diffusion.py", "limit": 40}
+[2m  ▎ thinking[0m
+  · 19893 tok · in 19780 (19072 cached / 708 new) · out 113 (16 reasoning) · ¥0.0033
+  -> read_file {"path": "Makefile"}
+  -> read_file {"path": "docs/CODING_STYLE.md", "limit": 50}
+[2m  ▎ thinking[0m
+现在让我进一步检查现有代码中的一些细节，以便在审查时引用。
+  · 25359 tok · in 21232 (19840 cached / 1392 new) · out 4127 (4028 reasoning) · ¥0.0294
+  -> read_file {"path": "tests/conftest.py"}
+  -> read_file {"path": "tests/test_elf_encoder.py"}
+[2m  ▎ thinking[0m
+  · 28558 tok · in 27009 (25344 cached / 1665 new) · out 1549 (1482 reasoning) · ¥0.0149
+  -> read_file {"path": "docs/diffusion-rag-plan.md", "limit": 80}
+[2m  ▎ thinking[0m
+## 审查文件
+- `src/elf/__init__.py`
+- `src/elf/pipeline.py`
+- `tests/test_elf_pipeline.py`
+- `task_prompt.txt`
+- `todo.md`
+
+---
+
+## 问题列表
+
+### [中] 类 docstring `Attributes` 与实际存储的属性不一致
+**文件**: `src/elf/pipeline.py:64-68`
+**问题**: 类 docstring 的 `Attributes:` 节列出了 `model_fn: 去噪速度场函数。`，但 `__init__` 实际存储的是 `self._model_fn_cond` 和 `self._model_fn_uncond` 两个私有属性，不存在名为 `model_fn` 的公共属性。`encoder` 属性也没有在 `Attributes` 中提及。
+**建议**: 将 `Attributes` 节修正为与实际存储的属性一致：
+
+```
+Attributes:
+    encoder: 底层文本编码器 (ELFEncoder)。
+```
+
+`_model_fn_cond` 与 `_model_fn_uncond` 是私有属性，按仓库规范应使用 `_` 前缀且不列入公共 `Attributes`。
+
+---
+
+### [中] `get_device()` 被重复调用且仅用于日志
+**文件**: `src/elf/pipeline.py:97-98`
+**问题**: 当 `device="auto"` 时，`__init__` 的 `logger.info` 中为了打印设备名调用了 `get_device()`（触发 PyTorch CUDA 检测），随后 `ELFEncoder(device="auto")` 内部又会再次调用 `get_device()`。这一行仅为日志输出而触发 device 探测，且日志信息与 `ELFEncoder` 自身日志重复。
+**建议**: 将 device 解析提前，存储为 `self.device`，然后复用:
+
+```python
+self.device = get_device() if device == "auto" else device
+self.encoder = encoder or ELFEncoder(device=self.device)
+logger.info("ELFPipeline 已初始化 (device=%s, ...)", self.device, ...)
+```
+
+这样既去除了重复调用，也让 `ELFPipeline` 像 `ELFEncoder` 一样保留 `self.device`，便于外部查询。
+
+---
+
+### [低] 模块常量 `_DEFAULT_STEPS` / `_DEFAULT_NOISE_T` 与 `diffusion.py` 重复定义
+**文件**: `src/elf/pipeline.py:75-77`
+**问题**: `_DEFAULT_NOISE_T = 0.4` 与 `src/elf/diffusion.py:23` 中的 `DEFAULT_NOISE_T` 语义完全相同。如果后续维护中只修改了一处，会导致 pipeline 与 diffusion 默认值漂移。
+**建议**: 直接从 `diffusion` 导入公共常量，或改为在 pipeline 中引用 `diffusion.DEFAULT_NOISE_T`:
+
+```python
+from src.elf.diffusion import DEFAULT_NOISE_T
+```
+
+然后 `_DEFAULT_NOISE_T` 可以删除或改为 `DEFAULT_NOISE_T` 的别名。`_DEFAULT_STEPS` 同理——`denoise()` 自身默认 `steps=2`，可考虑引用同一来源。
+
+---
+
+### [低] `_default_model_fn` 测试 `test_zero_at_t_one` 命名与 docstring 误导
+**文件**: `tests/test_elf_pipeline.py:83-88`
+**问题**: 测试名为 `test_zero_at_t_one`，docstring 写 "t=1 时噪声尺度大，速度应很小"，但实际断言 `np.allclose(v, -z)`——速度等于 `-z` 而非"很小"。`sigma(1.0) = 1.0`，因此 `v = -z`，速度大小完全等于输入向量大小。
+**建议**: 修正测试名称和 docstring，例如改为 `test_velocity_equals_neg_z_at_t_one`，docstring 写明 "t=1 时 sigma=1, 速度 v = -z"。
+
+---
+
+### [低] `enhance_batch` 逐条串行循环，无批量加速
+**文件**: `src/elf/pipeline.py:179-188`
+**问题**: `enhance_batch` 内部逐条调用 `self.enhance()`，每条都独立执行 `encode → add_noise → denoise → cfg_guide → normalize`。`ELFEncoder.encode_batch()` 支持批量编码，但此处未利用。对于大量文本，性能会显著下降。
+**建议**: 当前实现作为 Phase 2.3 初版可接受，但建议在 `enhance_batch` 中先用 `self.encoder.encode_batch(texts)` 批量编码，然后在向量维度上批量执行扩散步骤。可加 `# TODO: 批量扩散优化` 注释标记。
+
+---
+
+### [低] `device` 参数未存储为实例属性
+**文件**: `src/elf/pipeline.py:86`
+**问题**: `__init__` 接收 `device` 参数但仅透传给 `ELFEncoder()`，自身不保存。用户无法通过 `pipe.device` 查询实际使用的设备。对比 `ELFEncoder` 存储了 `self.device`。
+**建议**: 与上面的 `get_device()` 问题一同解决，存储 `self.device`。
+
+---
+
+## 总结
+- **高风险问题**: 0
+- **中风险问题**: 2（class docstring 属性不一致、get_device 重复调用仅用于日志）
+- **低风险问题**: 4（常量重复定义、测试命名误导、enhance_batch 串行、device 未存储）
+
+### 总体评价
+
+代码整体质量良好，符合仓库命名规范（PascalCase 类名、snake_case 函数、UPPER_SNAKE 常量、`_` 前缀私有函数），公共 API 均有完整类型注解和 Google 风格 docstring，无 `print()` 使用（全部使用 `logging`），29 个测试覆盖了编码、增强（有无 CFG）、确定性、不同参数、批量、空输入等场景。`__init__.py` 导出完整。无死代码、无不可达分支、无占位实现。
+
+2 个中风险问题建议优先修复——`Attributes` 文档错误和 `get_device()` 重复调用。4 个低风险问题可在后续迭代中处理。
+  · 31316 tok · in 29923 (28544 cached / 1379 new) · out 1393 (15 reasoning) · ¥0.0132
+
+
+## 代码变更 Diff
+
+diff --git a/src/elf/__init__.py b/src/elf/__init__.py
+index 13fa02b..790b44f 100644
+--- a/src/elf/__init__.py
++++ b/src/elf/__init__.py
+@@ -1,12 +1,14 @@
+-"""ELF 扩散模型编码器模块。"""
++"""ELF 扩散模型编码器与增强链路模块。"""
+ 
+ from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
+ from src.elf.encoder import ELFEncoder
++from src.elf.pipeline import ELFPipeline
+ 
+ __all__ = [
+     "add_noise",
+     "cfg_guide",
+     "denoise",
+     "ELFEncoder",
++    "ELFPipeline",
+     "sigma",
+ ]
+diff --git a/src/elf/pipeline.py b/src/elf/pipeline.py
+new file mode 100644
+index 0000000..3a5f433
+--- /dev/null
++++ b/src/elf/pipeline.py
+@@ -0,0 +1,192 @@
++"""ELF 扩散增强链路。
++
++整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise) 与
++CFG 引导 (cfg_guide) 的完整链路。
++
++典型用法::
++
++    pipe = ELFPipeline()
++    vec = pipe.enhance("query text", steps=2, noise_t=0.4, cfg_scale=2.0)
++    # 或仅编码不增强:
++    vec = pipe.encode("query text")
++"""
++
++from collections.abc import Callable
++
++import numpy as np
++from numpy.typing import NDArray
++
++from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
++from src.elf.encoder import ELFEncoder
++from src.utils.device import get_device
++from src.utils.logger import get_logger
++
++logger = get_logger(__name__)
++
++
++# ──────────────────────────────────────────────
++#  默认速度场（用于测试/回退）
++# ──────────────────────────────────────────────
++
++
++def _default_model_fn(z: NDArray[np.float32], t: float) -> NDArray[np.float32]:
++    """简易去噪速度场: 朝原点收缩。
++
++    当真实扩散模型不可用时回退使用。
++    速度方向为 -z，大小与当前噪声水平成反比。
++
++    Args:
++        z: 当前向量。shape (d,) 或 (n, d)。
++        t: 当前时间步 ∈ [0, 1]。
++
++    Returns:
++        速度向量，shape 与 z 相同。
++    """
++    noise_scale = sigma(t)
++    if noise_scale > 1e-8:
++        return -z / noise_scale
++    return np.zeros_like(z)
++
++
++# ──────────────────────────────────────────────
++#  ELFPipeline
++# ──────────────────────────────────────────────
++
++_DEFAULT_STEPS: int = 2
++_DEFAULT_NOISE_T: float = 0.4
++_DEFAULT_CFG_SCALE: float = 2.0
++
++
++class ELFPipeline:
++    """ELF 扩散增强链路。
++
++    整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise)
++    与 CFG 引导 (cfg_guide) 的完整链路。
++
++    Attributes:
++        encoder: 底层文本编码器。
++        model_fn: 去噪速度场函数。
++    """
++
++    def __init__(
++        self,
++        encoder: ELFEncoder | None = None,
++        model_fn_cond: Callable[[NDArray[np.float32], float], NDArray[np.float32]] | None = None,
++        model_fn_uncond: Callable[[NDArray[np.float32], float], NDArray[np.float32]] | None = None,
++        device: str = "auto",
++    ) -> None:
++        """初始化 ELF 增强链路。
++
++        Args:
++            encoder: ELFEncoder 实例。若为 None 则自动创建。
++            model_fn_cond: 条件去噪速度场函数。若为 None 使用默认简易模型。
++            model_fn_uncond: 无条件去噪速度场函数。
++                            若为 None 则与 model_fn_cond 相同。
++            device: 设备字符串，"auto" 表示自动检测。
++        """
++        self.encoder = encoder or ELFEncoder(device=device)
++        self._model_fn_cond = model_fn_cond
++        self._model_fn_uncond = model_fn_uncond or model_fn_cond
++
++        logger.info(
++            "ELFPipeline 已初始化 (device=%s, cond_fn=%s, uncond_fn=%s)",
++            get_device() if device == "auto" else device,
++            type(model_fn_cond).__name__ if model_fn_cond is not None else "default",
++            type(model_fn_uncond).__name__ if model_fn_uncond is not None else "default",
++        )
++
++    # ── 公共方法 ──────────────────────────────
++
++    def encode(self, text: str) -> NDArray[np.float32]:
++        """仅编码，不增强。
++
++        Args:
++            text: 输入文本。
++
++        Returns:
++            L2 归一化的 float32 向量，shape (768,)。
++        """
++        return self.encoder.encode(text)
++
++    def enhance(
++        self,
++        text: str,
++        steps: int = _DEFAULT_STEPS,
++        noise_t: float = _DEFAULT_NOISE_T,
++        cfg_scale: float = _DEFAULT_CFG_SCALE,
++        rng: np.random.Generator | None = None,
++    ) -> NDArray[np.float32]:
++        """完整增强链路: encode → add_noise → denoise → [CFG] → L2 normalize。
++
++        Args:
++            text: 输入文本。
++            steps: 去噪步数。
++            noise_t: 加噪强度 ∈ [0, 1]。0=无噪声, 1=完全噪声。
++            cfg_scale: CFG 引导强度。1.0 表示不使用 CFG。
++            rng: 可选随机数生成器（固定种子用）。
++
++        Returns:
++            L2 归一化的 float32 增强向量，shape (768,)。
++        """
++        # Step 1: 编码
++        z_0 = self.encoder.encode(text)
++
++        # Step 2: 加噪
++        z_t = add_noise(z_0, t=noise_t, rng=rng)
++
++        # Step 3: 条件去噪
++        cond_fn = self._model_fn_cond or _default_model_fn
++        z_cond = denoise(z_t, cond_fn, steps=steps, t_start=noise_t)
++
++        # Step 4: CFG 引导（scale 不为 1.0 时）
++        if abs(cfg_scale - 1.0) > 1e-6:
++            uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
++            z_uncond = denoise(z_t, uncond_fn, steps=steps, t_start=noise_t)
++            z_out = cfg_guide(z_cond, z_uncond, scale=cfg_scale)
++        else:
++            z_out = z_cond
++
++        # Step 5: L2 归一化
++        norm = float(np.linalg.norm(z_out))
++        if norm > 1e-8:
++            z_out = z_out / norm
++
++        logger.debug(
++            "enhance: text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f, norm=%.4f",
++            text[:50],
++            steps,
++            noise_t,
++            cfg_scale,
++            norm,
++        )
++        return z_out
++
++    def enhance_batch(
++        self,
++        texts: list[str],
++        steps: int = _DEFAULT_STEPS,
++        noise_t: float = _DEFAULT_NOISE_T,
++        cfg_scale: float = _DEFAULT_CFG_SCALE,
++        rng: np.random.Generator | None = None,
++    ) -> NDArray[np.float32]:
++        """批量增强。
++
++        Args:
++            texts: 文本列表。
++            steps: 去噪步数。
++            noise_t: 加噪强度。
++            cfg_scale: CFG 引导强度。
++            rng: 可选随机数生成器。
++
++        Returns:
++            shape (len(texts), 768) float32 数组。
++        """
++        if not texts:
++            raise ValueError("文本列表不能为空")
++
++        results: list[NDArray[np.float32]] = []
++        for text in texts:
++            vec = self.enhance(text, steps=steps, noise_t=noise_t, cfg_scale=cfg_scale, rng=rng)
++            results.append(vec)
++
++        return np.stack(results, axis=0)
+diff --git a/task_prompt.txt b/task_prompt.txt
+index f0b8ce3..0e72325 100644
+--- a/task_prompt.txt
++++ b/task_prompt.txt
+@@ -1,11 +1,11 @@
+ # 开发任务
+ 
+ ## Issue 描述
+-标题: Phase 2.2: 扩散接口 + CFG
++标题: Phase 2.3: Pipeline 集成 + 测试
+ 需求:
+-实现 src/elf/diffusion.py 中的 add_noise / denoise / cfg_guide。
++实现 src/elf/pipeline.py 整合编码器+扩散+CFG 的完整链路。
+ 
+-验收：单元测试覆盖扩散正反向 + CFG scale 边界
++验收：全部 8+ 测试通过 + make check 通过
+ 
+ ## 项目开发规范
+ 请严格遵循以下仓库定义的标准来完成任务。
+diff --git a/tests/test_elf_pipeline.py b/tests/test_elf_pipeline.py
+new file mode 100644
+index 0000000..8bb6344
+--- /dev/null
++++ b/tests/test_elf_pipeline.py
+@@ -0,0 +1,305 @@
++"""ELF 增强链路单元测试。
++
++使用 mock 模式，无须下载真实模型。
++"""
++
++from unittest.mock import MagicMock, patch
++
++import numpy as np
++import pytest
++
++from src.elf.pipeline import ELFPipeline, _default_model_fn
++
++# ──────────────────────────────────────────────
++#  Fixtures
++# ──────────────────────────────────────────────
++
++
++@pytest.fixture(autouse=True)
++def _mock_encoder() -> None:
++    """mock ELFEncoder 的 SentenceTransformer，返回固定 768-dim 向量。
++
++    所有测试自动生效。
++    """
++    rng = np.random.RandomState(42)
++    fixed_vec = rng.randn(768).astype(np.float32)
++    fixed_vec /= np.linalg.norm(fixed_vec)
++
++    mock_instance = MagicMock()
++    mock_instance.encode.return_value = fixed_vec
++
++    patcher = patch(
++        "src.elf.encoder.SentenceTransformer",
++        return_value=mock_instance,
++    )
++    patcher.start()
++    yield
++    patcher.stop()
++
++
++# ──────────────────────────────────────────────
++#  测试 _default_model_fn
++# ──────────────────────────────────────────────
++
++
++class TestDefaultModelFn:
++    """默认速度场函数测试。"""
++
++    def test_shape_preserved(self) -> None:
++        """输出 shape 与输入一致。"""
++        z = np.random.randn(768).astype(np.float32)
++        v = _default_model_fn(z, t=0.4)
++        assert v.shape == (768,)
++
++    def test_dtype(self) -> None:
++        """输出 dtype 为 float32。"""
++        z = np.random.randn(768).astype(np.float32)
++        v = _default_model_fn(z, t=0.4)
++        assert v.dtype == np.float32
++
++    def test_direction_toward_origin(self) -> None:
++        """速度方向指向原点（与 z 反向）。"""
++        z = np.array([1.0, -2.0, 3.0], dtype=np.float32)
++        v = _default_model_fn(z, t=0.5)
++        # v 应该与 z 反向
++        assert np.dot(v, z) < 0
++
++    def test_zero_at_t_one(self) -> None:
++        """t=1 时噪声尺度大，速度应很小。"""
++        z = np.random.randn(768).astype(np.float32)
++        v = _default_model_fn(z, t=1.0)
++        # v = -z / 1.0 = -z
++        assert np.allclose(v, -z, atol=1e-6)
++
++    def test_magnitude_inversely_related(self) -> None:
++        """速度大小与噪声水平成反比。"""
++        z = np.array([5.0, 0.0], dtype=np.float32)
++        v_small_t = _default_model_fn(z, t=0.2)  # v = -z/0.2
++        v_large_t = _default_model_fn(z, t=0.8)  # v = -z/0.8
++        assert float(np.linalg.norm(v_small_t)) > float(np.linalg.norm(v_large_t))
++
++    def test_zero_input(self) -> None:
++        """零向量输入速度也为零。"""
++        z = np.zeros(768, dtype=np.float32)
++        v = _default_model_fn(z, t=0.4)
++        assert np.allclose(v, 0.0, atol=1e-6)
++
++
++# ──────────────────────────────────────────────
++#  ELFPipeline
++# ──────────────────────────────────────────────
++
++
++class TestELFPipeline:
++    """增强链路集成测试。"""
++
++    # ── encode ──────────────────────────────
++
++    def test_encode_shape(self) -> None:
++        """encode 输出 shape (768,)。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.encode("Hello world")
++        assert vec.shape == (768,)
++
++    def test_encode_dtype(self) -> None:
++        """encode 输出 float32。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.encode("Hello world")
++        assert vec.dtype == np.float32
++
++    def test_encode_l2_norm(self) -> None:
++        """encode 输出 L2 归一化。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.encode("Hello world")
++        norm = float(np.linalg.norm(vec))
++        assert abs(norm - 1.0) < 1e-5
++
++    # ── enhance (无 CFG) ─────────────────────
++
++    def test_enhance_shape(self) -> None:
++        """enhance 输出 shape (768,)。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=1.0)
++        assert vec.shape == (768,)
++
++    def test_enhance_dtype(self) -> None:
++        """enhance 输出 float32。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=1.0)
++        assert vec.dtype == np.float32
++
++    def test_enhance_l2_norm(self) -> None:
++        """enhance 输出 L2 归一化。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=1.0)
++        norm = float(np.linalg.norm(vec))
++        assert abs(norm - 1.0) < 1e-5
++
++    def test_enhance_t_zero_no_noise(self) -> None:
++        """noise_t=0 时无噪声，增强后仍归一化。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.0, cfg_scale=1.0)
++        norm = float(np.linalg.norm(vec))
++        assert abs(norm - 1.0) < 1e-5
++
++    def test_enhance_cfg_scale_one(self) -> None:
++        """cfg_scale=1.0 时跳过 CFG，与仅去噪等价。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=1.0)
++        assert vec.shape == (768,)
++        assert vec.dtype == np.float32
++
++    # ── enhance (有 CFG) ─────────────────────
++
++    def test_enhance_with_cfg_shape(self) -> None:
++        """enhance + CFG 输出 shape (768,)。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0)
++        assert vec.shape == (768,)
++
++    def test_enhance_with_cfg_dtype(self) -> None:
++        """enhance + CFG 输出 float32。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0)
++        assert vec.dtype == np.float32
++
++    def test_enhance_with_cfg_normalized(self) -> None:
++        """enhance + CFG 输出 L2 归一化。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0)
++        norm = float(np.linalg.norm(vec))
++        assert abs(norm - 1.0) < 1e-5
++
++    def test_cfg_scale_effect_differs(self) -> None:
++        """不同 cfg_scale 产生不同向量（去噪后输出不同方向）。"""
++
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return -z * 0.1  # 朝原点收缩
++
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            # 朝完全不同方向偏移（对第一维施加正速度）
++            result = np.zeros_like(z)
++            result[..., 0] = 1.0
++            return result
++
++        pipe = ELFPipeline(device="cpu", model_fn_cond=cond_fn, model_fn_uncond=uncond_fn)
++        rng42 = np.random.default_rng(42)
++        vec1 = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=1.0, rng=rng42)
++        rng42 = np.random.default_rng(42)
++        vec2 = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=3.0, rng=rng42)
++        assert not np.allclose(vec1, vec2, atol=1e-4)
++
++    # ── custom model_fn ─────────────────────
++
++    def test_custom_model_fn(self) -> None:
++        """自定义 model_fn 被正确使用。"""
++        calls_cond: list[float] = []
++        calls_uncond: list[float] = []
++
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            calls_cond.append(t)
++            return np.zeros_like(z)
++
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            calls_uncond.append(t)
++            return np.zeros_like(z)
++
++        pipe = ELFPipeline(
++            device="cpu",
++            model_fn_cond=cond_fn,
++            model_fn_uncond=uncond_fn,
++        )
++        vec = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0)
++        assert vec.shape == (768,)
++        # 条件函数应被调用 steps 次，无条件函数也应被调用 steps 次
++        assert len(calls_cond) == 2
++        assert len(calls_uncond) == 2
++
++    def test_custom_model_fn_no_cfg(self) -> None:
++        """cfg_scale=1.0 时不调用无条件函数。"""
++        cond_calls: list[float] = []
++        uncond_calls: list[float] = []
++
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            cond_calls.append(t)
++            return -z * 0.1
++
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            uncond_calls.append(t)
++            return np.zeros_like(z)
++
++        pipe = ELFPipeline(device="cpu", model_fn_cond=cond_fn, model_fn_uncond=uncond_fn)
++        pipe.enhance("query", steps=3, noise_t=0.4, cfg_scale=1.0)
++        assert len(cond_calls) == 3
++        # cfg_scale=1.0 时不走 CFG 分支，不调用 uncond_fn
++        assert len(uncond_calls) == 0
++
++    # ── 确定性 ─────────────────────────────
++
++    def test_deterministic_with_seed(self) -> None:
++        """相同种子 + 相同输入产生相同输出。"""
++        pipe = ELFPipeline(device="cpu")
++        rng1 = np.random.default_rng(42)
++        rng2 = np.random.default_rng(42)
++        v1 = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0, rng=rng1)
++        v2 = pipe.enhance("query", steps=2, noise_t=0.4, cfg_scale=2.0, rng=rng2)
++        assert np.allclose(v1, v2, atol=1e-5)
++
++    def test_different_seed_different(self) -> None:
++        """不同种子产生不同输出。"""
++        pipe = ELFPipeline(device="cpu")
++        v1 = pipe.enhance(
++            "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(42)
++        )
++        v2 = pipe.enhance(
++            "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(99)
++        )
++        assert not np.allclose(v1, v2, atol=0.1)
++
++    # ── 不同参数 ───────────────────────────
++
++    def test_enhance_one_step(self) -> None:
++        """steps=1 正常工作。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=1, noise_t=0.3, cfg_scale=1.0)
++        assert vec.shape == (768,)
++
++    def test_enhance_four_steps(self) -> None:
++        """steps=4 正常工作。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=4, noise_t=0.5, cfg_scale=1.0)
++        assert vec.shape == (768,)
++
++    def test_enhance_high_noise(self) -> None:
++        """高噪声 t=0.8 正常工作。"""
++        pipe = ELFPipeline(device="cpu")
++        vec = pipe.enhance("query", steps=2, noise_t=0.8, cfg_scale=1.0)
++        assert vec.shape == (768,)
++
++    # ── enhance_batch ──────────────────────
++
++    def test_enhance_batch_shape(self) -> None:
++        """enhance_batch 输出 shape (N, 768)。"""
++        pipe = ELFPipeline(device="cpu")
++        texts = ["query one", "query two", "query three"]
++        vecs = pipe.enhance_batch(texts, steps=2, noise_t=0.4, cfg_scale=1.0)
++        assert vecs.shape == (3, 768)
++
++    def test_enhance_batch_dtype(self) -> None:
++        """enhance_batch 输出 float32。"""
++        pipe = ELFPipeline(device="cpu")
++        vecs = pipe.enhance_batch(["a", "b"], steps=2, noise_t=0.4, cfg_scale=1.0)
++        assert vecs.dtype == np.float32
++
++    def test_enhance_batch_empty_raises(self) -> None:
++        """空列表应抛出 ValueError。"""
++        pipe = ELFPipeline(device="cpu")
++        with pytest.raises(ValueError, match="不能为空"):
++            pipe.enhance_batch([])
++
++    # ── 默认构造函数 ───────────────────────
++
++    def test_default_construction(self) -> None:
++        """无参数构造不报错。"""
++        pipe = ELFPipeline(device="cpu")
++        assert pipe.encoder is not None
+diff --git a/todo.md b/todo.md
+index 454a7a8..774d28c 100644
+--- a/todo.md
++++ b/todo.md
+@@ -1,8 +1,12 @@
+-# Phase 2.2 实现任务
++# Phase 2.3 实现任务
+ 
+ ## 任务列表
+ - [x] 需求分析完成
+ - [x] 创建 `src/elf/diffusion.py` — add_noise / denoise / cfg_guide 实现
+ - [x] 更新 `src/elf/__init__.py` — 导出三个函数
+ - [x] 创建 `tests/test_elf_diffusion.py` — 41 个单元测试，覆盖扩散正反向 + CFG scale 边界
+-- [x] 运行测试验证全部通过 ✅
++- [x] 创建 `src/elf/pipeline.py` — ELFPipeline 整合 encode + add_noise + denoise + cfg_guide + L2 normalize
++- [x] 更新 `src/elf/__init__.py` — 导出 ELFPipeline
++- [x] 创建 `tests/test_elf_pipeline.py` — 29 个单元测试（mock 模式，无需真实模型）
++- [x] 全部 104 测试通过 ✅
++- [x] `make check` 通过 ✅
