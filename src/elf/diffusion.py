@@ -18,6 +18,9 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# ── 常量 ───────────────────────────────────────
+
+DEFAULT_NOISE_T: float = 0.4
 
 # ──────────────────────────────────────────────
 #  噪声调度
@@ -43,7 +46,7 @@ def sigma(t: float) -> float:
 
 def add_noise(
     z_0: NDArray[np.float32],
-    t: float = 0.4,
+    t: float = DEFAULT_NOISE_T,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.float32]:
     """前向加噪: z_t = z_0 + σ(t) · ε, ε ~ N(0, I)
@@ -80,7 +83,7 @@ def add_noise(
     z_t = z_0 + sigma(t) * eps
 
     logger.debug("add_noise: t=%.2f, shape=%s", t, z_0.shape)
-    return z_t.astype(np.float32)
+    return z_t
 
 
 # ──────────────────────────────────────────────
@@ -129,10 +132,10 @@ def denoise(
         raise ValueError(f"z_t 必须是 float32，got {z_t.dtype}")
 
     if t_start is None:
-        t_start = 0.4  # 参数网格中最常用的默认值
+        t_start = DEFAULT_NOISE_T
 
     is_1d = z_t.ndim == 1
-    z = np.atleast_2d(z_t).copy().astype(np.float32)
+    z = np.atleast_2d(z_t).copy()
 
     dt = (t_end - t_start) / steps
 
@@ -174,6 +177,7 @@ def cfg_guide(
         引导后的向量，shape 与输入相同。
 
     Raises:
+        ValueError: z_cond 或 z_uncond 不是 float32。
         ValueError: z_cond 和 z_uncond shape 不一致。
 
     Examples:
@@ -183,12 +187,16 @@ def cfg_guide(
         >>> z_cfg.shape
         (2,)
     """
+    if z_cond.dtype != np.float32:
+        raise ValueError(f"z_cond 必须是 float32，got {z_cond.dtype}")
+    if z_uncond.dtype != np.float32:
+        raise ValueError(f"z_uncond 必须是 float32，got {z_uncond.dtype}")
     if z_cond.shape != z_uncond.shape:
         raise ValueError(
-            f"z_cond 和 z_uncond shape 必须一致，" f"got {z_cond.shape} vs {z_uncond.shape}"
+            f"z_cond 和 z_uncond shape 必须一致，got {z_cond.shape} vs {z_uncond.shape}"
         )
 
     z_cfg = z_uncond + scale * (z_cond - z_uncond)
 
     logger.debug("cfg_guide: scale=%.1f, shape=%s", scale, z_cond.shape)
-    return z_cfg.astype(np.float32)
+    return z_cfg

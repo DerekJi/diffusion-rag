@@ -119,7 +119,7 @@ class TestAddNoise:
         """t < 0 应抛出 ValueError。"""
         z_0 = np.random.randn(768).astype(np.float32)
         with pytest.raises(ValueError, match="必须在"):
-            add_noise(z_0, t=-0.1)  # type: ignore[arg-type]
+            add_noise(z_0, t=-0.1)
 
     def test_invalid_t_above_one(self) -> None:
         """t > 1 应抛出 ValueError。"""
@@ -149,12 +149,12 @@ class TestDenoise:
     """反向去噪测试。"""
 
     @staticmethod
-    def _identity_model(z: np.ndarray, t: float) -> np.ndarray:
+    def _identity_model(z: np.ndarray, _t: float) -> np.ndarray:
         """恒等模型: 返回输入本身。"""
         return z
 
     @staticmethod
-    def _zero_model(z: np.ndarray, t: float) -> np.ndarray:
+    def _zero_model(z: np.ndarray, _t: float) -> np.ndarray:
         """零速度模型: 返回零向量。"""
         return np.zeros_like(z)
 
