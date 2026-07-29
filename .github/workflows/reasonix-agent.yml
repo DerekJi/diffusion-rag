@@ -12,7 +12,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
-  workflows: write
+  actions: write
 
 jobs:
   review_and_fix:
