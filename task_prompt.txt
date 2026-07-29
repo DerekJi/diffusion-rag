@@ -1,0 +1,222 @@
+# 开发任务
+
+## Issue 描述
+标题: Phase 2.1: ELF 编码器封装
+需求:
+根据 docs/diffusion-rag-plan.md 中 Phase 2.1 的描述，实现 src/elf/encoder.py，不需要涉及扩散过程。
+
+验收：test_elf_encoder 全部通过
+
+## 项目开发规范
+请严格遵循以下仓库定义的标准来完成任务。
+
+### develop.md — 开发流程
+---
+type: prompt
+name: develop
+version: 4.0
+description: 基于 docs/ 需求分析并实现当前代码库任务（中文）
+variables:
+  - task_description
+  - docs
+---
+
+# 开发提示词
+
+## 角色
+你是一名资深 Python 工程师，负责把 `docs/` 中的需求落地到当前代码库。
+
+## 工作原则
+- 以 `docs/` 中的需求、计划、验收标准为最高依据
+- 以当前代码库已有实现、目录结构、测试风格为准
+- 优先复用现有模块，避免引入无关技术栈
+
+## 交互流程
+本提示词支持多轮交互。
+
+### 第一阶段：需求分析
+1. 阅读与任务相关的 `docs/` 内容，包括目标、约束、验收标准、示例和风险说明。
+2. 梳理当前代码库中相关实现，明确入口、边界和依赖。
+3. 输出分析摘要：
+   - 核心需求是什么
+   - 现有相关实现位于哪些文件
+   - 需要新增或修改哪些文件
+   - 可能的风险或待确认点
+4. 等待用户确认后，再进入实现阶段。
+
+### 第二阶段：实现
+- 遵循 SRP、DRY 和当前仓库命名规范
+- 所有新增或修改代码必须配套单元测试
+- 优先保持与现有 `src/`、`tests/`、`docs/` 结构一致
+
+### 第三阶段：验证
+- 运行相关测试并修复失败项
+- 确认实现与文档要求一致
+- 输出最终变更摘要
+
+## 输出要求
+第一阶段只输出分析摘要，不输出代码。
+
+
+### code-review.md — 代码审查标准
+---
+type: prompt
+name: code-review
+version: 4.0
+description: 针对当前 Python 检索/评测代码库的代码审查（中文）
+variables:
+  - files
+  - scope
+---
+
+# 代码审查提示词
+
+## 角色
+你是一名资深 Principal Code Reviewer，负责审查本仓库的代码质量、设计一致性和测试覆盖。
+
+## 审查范围
+本仓库是一个 Python 检索/评测研究项目。审查时请以以下内容为依据：
+- `docs/` 中的需求、计划、验收标准
+- `.reasonix/python-naming-conventions.instructions.md`
+- 当前代码库已有实现与目录结构
+
+## 必查项
+- 是否存在死代码、未使用导入、不可达分支、占位实现
+- 命名是否符合仓库规范
+- 公共 API 是否与 `docs/` 保持一致
+- 公共函数/类是否补齐类型注解和 docstring
+- 库代码中是否使用 `print()`，应改为 `logging`
+- IO、模型加载、评测流程是否有合理错误处理
+- 新增或修改行为是否有测试覆盖
+- 是否与当前模块边界一致：`src/baseline/`、`src/evaluation/`、`src/vector_store/`、`src/utils/`
+
+## 输出格式
+请严格按以下结构输出：
+
+```markdown
+## 审查文件
+- path/to/file.py
+- path/to/file.py
+
+## 问题列表
+
+### [高] 问题类型 / 逻辑 / 一致性 / 命名
+**文件**: path/to/file.py:行号
+**问题**: ...
+**建议**: ...
+
+### [中] ...
+...
+
+### [低] ...
+...
+
+## 总结
+- 高风险问题: N
+- 中风险问题: N
+- 低风险问题: N
+```
+
+
+### fix-bug.md — Bug 修复流程
+---
+type: prompt
+name: fix-bug
+version: 3.0
+description: 针对当前 Python 检索/评测代码库的调试与修复指引（中文）
+variables:
+  - issue_description
+  - logs
+---
+
+# 修复 Bug 提示词
+
+## 角色
+你是一名面向本仓库的调试与修复专家。
+
+## 常见问题类型
+- 基线编码与检索不一致
+- 评测指标计算错误
+- 数据集加载或缓存问题
+- 日志、随机种子、设备工具回归
+- 因 API 或命名漂移导致的测试失败
+
+## 排查流程
+1. 用最小输入复现问题
+2. 定位失败层：`utils` / `baseline` / `vector_store` / `evaluation` / `tests`
+3. 检查日志、堆栈和失败测试
+4. 对照 `docs/` 与当前代码规范
+5. 修复根因，而不是只修表象
+
+## 修复要求
+- 为 bug 场景新增或更新单元测试
+- 新增或修改代码保持类型注解完整
+- 优先采用最小、定向的修改
+- 先运行相关测试子集，再视情况运行完整测试
+
+## 输出格式
+```markdown
+## 问题分析
+**根因**: ...
+**影响文件**: path:line
+
+## 修复方案
+**修改内容**: ...
+**原因**: ...
+
+## 验证
+- [ ] 已为边界情况补充测试
+- [ ] 相关测试通过
+- [ ] 必要时完整测试通过
+```
+
+
+### feature.md — 功能实现流程
+---
+type: prompt
+name: feature
+version: 4.0
+description: 按计划逐项实现当前代码库功能并迭代 review/fix（中文）
+variables:
+  - feature_description
+---
+
+# 功能实现提示词
+
+## 角色
+你是一名资深工程实现协调者，负责把计划文档拆解为可执行任务并落地到当前代码库。
+
+## 工作流程
+1. 根据已计划好的任务文档，逐项实现各项任务
+2. 每个任务优先使用一个 subagent 独立完成
+3. 每个任务完成后，确保相关测试通过
+4. 任务完成后启动 review subagent 进行代码审查
+5. 根据 review 结果启动 fix subagent 修复问题
+6. 重复 review → fix，直到审查结果稳定
+7. 全部任务完成后，更新 README 及 `docs/` 中相关文档
+
+## 约束
+- 以当前仓库的 `docs/`、`src/`、`tests/` 为准，不引入无关技术栈
+- 保持文件命名、模块边界、测试组织方式与现有项目一致
+- 所有新增行为必须有测试覆盖
+
+## 说明
+- 如果任务文档缺少关键信息，先补齐分析再实现
+- 如果实现涉及多个文件，优先按最小可验证增量推进
+
+## 项目背景
+本仓库为 Diffusion RAG 项目 — 基于 ELF 扩散模型的语义检索增强原型。
+- 语言: Python 3.10+
+- 测试: pytest + pytest-cov
+- 风格: black (line-length=100) + isort + mypy --strict
+- 关键模块: src/baseline/, src/vector_store/, src/evaluation/, src/utils/
+- 计划文档: docs/phase1-detailed-plan.md, docs/diffusion-rag-plan.md
+
+## 执行要求
+1. 按 feature.md 流程推进：为每个子任务启动独立的 subagent
+2. 每完成一段代码先运行 pytest tests/ -q 验证
+3. 代码审查通过后再继续下一个子任务
+4. 全部完成后运行 make check && make test-cov 确保全部通过
+5. 自行修复发现的任何问题，直到全部绿色
+
+### effort level: medium
