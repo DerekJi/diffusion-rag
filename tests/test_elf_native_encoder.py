@@ -48,6 +48,8 @@ class TestELFNativeEncoderMock:
             patch(
                 "src.elf.native_encoder.T5Tokenizer.from_pretrained", return_value=mock_tokenizer
             ),
+            # 仅 patch native_encoder 模块内的 torch.nn.Linear 引用，
+            # 不影响其他模块（function scope + autouse，单线程 pytest 安全）
             patch("src.elf.native_encoder.torch.nn.Linear", return_value=mock_proj),
             patch("src.elf.native_encoder._load_elf_checkpoint", return_value=False),
             # mock _encode_torch 返回固定向量

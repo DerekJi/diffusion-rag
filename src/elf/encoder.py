@@ -8,6 +8,8 @@
   注：扩散相关步骤 (Phase 2.2+) 位于 src/elf/diffusion.py。
 """
 
+from __future__ import annotations
+
 import numpy as np
 from numpy.typing import NDArray
 

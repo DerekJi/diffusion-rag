@@ -12,10 +12,20 @@ ELF 模型架构（embedded-language-flows/ELF-B-owt-torch）:
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from transformers import T5EncoderModel, T5Tokenizer
+
+try:
+    from transformers import T5EncoderModel, T5Tokenizer
+
+    _HAS_TRANSFORMERS = True
+except ImportError:  # pragma: no cover
+    T5EncoderModel = None  # type: ignore[assignment,misc]
+    T5Tokenizer = None  # type: ignore[assignment,misc]
+    _HAS_TRANSFORMERS = False
 
 from src.utils.device import get_device
 from src.utils.logger import get_logger
@@ -64,6 +74,11 @@ class ELFNativeEncoder:
         self.device_str = get_device() if device == "auto" else device
         self.device = torch.device(self.device_str)
 
+        if not _HAS_TRANSFORMERS:
+            raise RuntimeError(  # pragma: no cover
+                "transformers 未安装。请运行: pip install transformers"
+            )
+
         logger.info("加载 ELF 原生模型 %s (device=%s)", model_name, self.device_str)
         try:
             # 加载 T5 编码器基座
@@ -84,7 +99,7 @@ class ELFNativeEncoder:
 
             # 尝试加载 ELF 完整模型 checkpoint（含投影层权重）
             # 若 checkpoint 可用则覆盖投影层初始化
-            _load_elf_checkpoint(self._t5, self._projection, model_name, self.device)
+            _load_elf_checkpoint(self._projection, model_name, self.device)
 
         except Exception as e:
             logger.error("ELF 原生模型加载失败: %s", e)
@@ -116,7 +131,7 @@ class ELFNativeEncoder:
 
         vec: NDArray[np.float32] = self._encode_torch([text], batch_size=1)
         # 确保移除 batch 维度
-        return np.asarray(vec).reshape(-1)
+        return vec.reshape(-1)
 
     @torch.no_grad()
     def encode_batch(self, texts: list[str], batch_size: int = 32) -> NDArray[np.float32]:
@@ -189,7 +204,6 @@ class ELFNativeEncoder:
 
 
 def _load_elf_checkpoint(
-    t5_model: T5EncoderModel,
     projection: torch.nn.Linear,
     checkpoint_path: str,
     device: torch.device,
@@ -200,7 +214,6 @@ def _load_elf_checkpoint(
     若找到匹配的投影层权重则覆盖初始化。
 
     Args:
-        t5_model: T5 编码器模型。
         projection: 投影层。
         checkpoint_path: HuggingFace 模型 ID 或本地路径。
         device: 计算设备。
@@ -211,11 +224,27 @@ def _load_elf_checkpoint(
     try:
         from huggingface_hub import hf_hub_download
 
-        # 尝试下载 checkpoint
-        checkpoint_file = hf_hub_download(
-            repo_id=checkpoint_path if "/" in checkpoint_path else ELF_MODEL_REPO,
-            filename="checkpoint_95085",
-        )
+        # 判断是本地路径还是 HuggingFace 仓库 ID
+        if os.path.isdir(checkpoint_path) or os.path.isfile(checkpoint_path):
+            # 本地路径：直接加载文件
+            checkpoint_file = checkpoint_path
+        elif "/" in checkpoint_path:
+            # HuggingFace 仓库 ID
+            checkpoint_file = hf_hub_download(
+                repo_id=checkpoint_path,
+                filename="checkpoint_95085",
+            )
+        else:
+            # 回退到默认 ELF 仓库
+            logger.warning(
+                "无法识别 checkpoint_path=%r，回退到默认仓库 %s",
+                checkpoint_path,
+                ELF_MODEL_REPO,
+            )
+            checkpoint_file = hf_hub_download(
+                repo_id=ELF_MODEL_REPO,
+                filename="checkpoint_95085",
+            )
         state = torch.load(checkpoint_file, map_location=device, weights_only=True)
 
         # 尝试加载投影层权重（key 可能为 "projection.weight" 或 "decoder.weight"）

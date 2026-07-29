@@ -32,9 +32,15 @@ class ELFModelWrapper:
         model_fn(z: NDArray[np.float32], t: float) -> NDArray[np.float32]
 
     Attributes:
-        encoder: 底层 ELFNativeEncoder 实例（提供条件编码）。
         cond_vec: 条件文本的编码向量（条件模式使用）。
         use_conditioning: 是否使用条件编码。
+
+    .. note::
+
+        当前速度场实现为数学模拟（占位），后续 Phase 将接入
+        ELF 原生模型的真实 forward() 推理。详见内部方法 docstring。
+
+        FIXME(Phase 2.3+): 替换 _velocity_* 为真实 ELF 模型前向调用。
     """
 
     def __init__(
@@ -93,7 +99,8 @@ class ELFModelWrapper:
     ) -> NDArray[np.float32]:
         """带条件的速度场预测。
 
-        模拟 ELF 模型的条件速度场：将当前状态推向条件向量方向。
+        FIXME(Phase 2.3+): 当前为数学模拟占位，将当前状态推向条件向量方向。
+        后续应替换为 ELF 原生模型的真实 forward() 推理。
 
         Args:
             z: 当前向量，shape (n, d)。
@@ -116,7 +123,8 @@ class ELFModelWrapper:
     ) -> NDArray[np.float32]:
         """无条件速度场预测。
 
-        模拟 ELF 模型的无条件速度场：向原点收缩。
+        FIXME(Phase 2.3+): 当前为数学模拟占位，向原点收缩。
+        后续应替换为 ELF 原生模型的真实 forward() 推理。
 
         Args:
             z: 当前向量，shape (n, d)。
