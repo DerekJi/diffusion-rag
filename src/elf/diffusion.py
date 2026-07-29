@@ -9,6 +9,8 @@
   encode(text) → add_noise → denoise → cfg_guide → L2 normalize → FAISS search
 """
 
+from collections.abc import Callable
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -88,7 +90,7 @@ def add_noise(
 
 def denoise(
     z_t: NDArray[np.float32],
-    model_fn: callable,
+    model_fn: Callable[[NDArray[np.float32], float], NDArray[np.float32]],
     steps: int = 2,
     t_start: float | None = None,
     t_end: float = 0.0,
