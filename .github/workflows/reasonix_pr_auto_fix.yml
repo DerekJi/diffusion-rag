@@ -1,14 +1,14 @@
 name: Reasonix PR Auto-fix
 
-# 触发：PR 创建或更新时自动修复格式/类型/测试问题
+# 触发：PR 创建/更新/重新审查时自动修复格式/类型/测试问题
 on:
   pull_request:
     types: [opened, synchronize]
+  pull_request_review:
+    types: [submitted]
 
 concurrency:
-  # 与 reasonix-agent.yml 共享同一 group，防止两个 workflow 同时
-  # push 到同一 PR 分支导致 git 竞态冲突
-  group: pr-fix-${{ github.event.pull_request.number }}
+  group: pr-static-checks-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 permissions:
