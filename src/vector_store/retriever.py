@@ -1,8 +1,7 @@
 """统一检索接口（双链路共享）。"""
 
-from typing import Any
-
 import numpy as np
+from numpy.typing import NDArray
 
 from src.utils.logger import get_logger
 from src.vector_store.indexer import FAISSIndexer
@@ -25,9 +24,7 @@ class Retriever:
         """
         self._indexer = indexer
 
-    def search(
-        self, query_vector: np.ndarray[Any, Any], k: int = 10
-    ) -> tuple[list[str], list[float]]:
+    def search(self, query_vector: NDArray[np.float32], k: int = 10) -> tuple[list[str], list[float]]:
         """检索 top-k 结果。
 
         Args:
