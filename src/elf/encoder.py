@@ -21,7 +21,7 @@ try:
 
     _HAS_SENTENCE_TRANSFORMERS = True
 except ImportError:  # pragma: no cover
-    SentenceTransformer = None  # type: ignore[assignment]
+    SentenceTransformer = None  # type: ignore[misc]
     _HAS_SENTENCE_TRANSFORMERS = False
 
 
