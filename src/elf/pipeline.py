@@ -16,7 +16,7 @@ from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
+from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, cfg_guide, denoise, sigma
 from src.elf.encoder import ELFEncoder
 from src.utils.device import get_device
 from src.utils.logger import get_logger
@@ -53,7 +53,6 @@ def _default_model_fn(z: NDArray[np.float32], t: float) -> NDArray[np.float32]:
 # ──────────────────────────────────────────────
 
 _DEFAULT_STEPS: int = 2
-_DEFAULT_NOISE_T: float = 0.4
 _DEFAULT_CFG_SCALE: float = 2.0
 
 
@@ -64,8 +63,8 @@ class ELFPipeline:
     与 CFG 引导 (cfg_guide) 的完整链路。
 
     Attributes:
-        encoder: 底层文本编码器。
-        model_fn: 去噪速度场函数。
+        encoder: 底层文本编码器 (ELFEncoder)。
+        device: 实际使用的设备字符串。
     """
 
     def __init__(
@@ -84,13 +83,14 @@ class ELFPipeline:
                             若为 None 则与 model_fn_cond 相同。
             device: 设备字符串，"auto" 表示自动检测。
         """
-        self.encoder = encoder or ELFEncoder(device=device)
+        self.device = get_device() if device == "auto" else device
+        self.encoder = encoder or ELFEncoder(device=self.device)
         self._model_fn_cond = model_fn_cond
         self._model_fn_uncond = model_fn_uncond or model_fn_cond
 
         logger.info(
             "ELFPipeline 已初始化 (device=%s, cond_fn=%s, uncond_fn=%s)",
-            get_device() if device == "auto" else device,
+            self.device,
             type(model_fn_cond).__name__ if model_fn_cond is not None else "default",
             type(model_fn_uncond).__name__ if model_fn_uncond is not None else "default",
         )
@@ -112,7 +112,7 @@ class ELFPipeline:
         self,
         text: str,
         steps: int = _DEFAULT_STEPS,
-        noise_t: float = _DEFAULT_NOISE_T,
+        noise_t: float = DEFAULT_NOISE_T,
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
@@ -165,11 +165,11 @@ class ELFPipeline:
         self,
         texts: list[str],
         steps: int = _DEFAULT_STEPS,
-        noise_t: float = _DEFAULT_NOISE_T,
+        noise_t: float = DEFAULT_NOISE_T,
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
-        """批量增强。
+        """批量增强（逐条串行，Phase 2.3 初版）。
 
         Args:
             texts: 文本列表。
@@ -184,6 +184,8 @@ class ELFPipeline:
         if not texts:
             raise ValueError("文本列表不能为空")
 
+        # TODO: 批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，
+        # 再在向量维度上批量执行扩散步骤。
         results: list[NDArray[np.float32]] = []
         for text in texts:
             vec = self.enhance(text, steps=steps, noise_t=noise_t, cfg_scale=cfg_scale, rng=rng)

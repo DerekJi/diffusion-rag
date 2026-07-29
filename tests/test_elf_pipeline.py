@@ -64,11 +64,11 @@ class TestDefaultModelFn:
         # v 应该与 z 反向
         assert np.dot(v, z) < 0
 
-    def test_zero_at_t_one(self) -> None:
-        """t=1 时噪声尺度大，速度应很小。"""
+    def test_velocity_equals_neg_z_at_t_one(self) -> None:
+        """t=1 时 sigma(1)=1, 速度 v = -z（等于输入向量取反）。"""
         z = np.random.randn(768).astype(np.float32)
         v = _default_model_fn(z, t=1.0)
-        # v = -z / 1.0 = -z
+        # v = -z / sigma(1) = -z / 1.0 = -z
         assert np.allclose(v, -z, atol=1e-6)
 
     def test_magnitude_inversely_related(self) -> None:

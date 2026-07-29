@@ -1,65 +1,185 @@
-# PR 代码审查
+# 根据审查结果自动修复
 
-请严格按以下项目级审查标准 review 下方 diff。
+下面是代码审查报告和 PR 代码变更。请：
+1. 读取审查报告中的每个问题
+2. 按 fix-bug.md 流程修复代码
+3. 修复后运行 black . --line-length 100 && isort .
+4. 运行 pytest tests/ -q -m "not slow"
+5. 如果测试失败，读取报错信息继续修复
+6. 重复直到全部绿色
+7. 最终输出改了什么文件
 
-## 审查标准
+## 修复规范
 ---
 type: prompt
-name: code-review
-version: 4.0
-description: 针对当前 Python 检索/评测代码库的代码审查（中文）
+name: fix-bug
+version: 3.0
+description: 针对当前 Python 检索/评测代码库的调试与修复指引（中文）
 variables:
-  - files
-  - scope
+  - issue_description
+  - logs
 ---
 
-# 代码审查提示词
+# 修复 Bug 提示词
 
 ## 角色
-你是一名资深 Principal Code Reviewer，负责审查本仓库的代码质量、设计一致性和测试覆盖。
+你是一名面向本仓库的调试与修复专家。
 
-## 审查范围
-本仓库是一个 Python 检索/评测研究项目。审查时请以以下内容为依据：
-- `docs/` 中的需求、计划、验收标准
-- `.reasonix/python-naming-conventions.instructions.md`
-- 当前代码库已有实现与目录结构
+## 常见问题类型
+- 基线编码与检索不一致
+- 评测指标计算错误
+- 数据集加载或缓存问题
+- 日志、随机种子、设备工具回归
+- 因 API 或命名漂移导致的测试失败
 
-## 必查项
-- 是否存在死代码、未使用导入、不可达分支、占位实现
-- 命名是否符合仓库规范
-- 公共 API 是否与 `docs/` 保持一致
-- 公共函数/类是否补齐类型注解和 docstring
-- 库代码中是否使用 `print()`，应改为 `logging`
-- IO、模型加载、评测流程是否有合理错误处理
-- 新增或修改行为是否有测试覆盖
-- 是否与当前模块边界一致：`src/baseline/`、`src/evaluation/`、`src/vector_store/`、`src/utils/`
+## 排查流程
+1. 用最小输入复现问题
+2. 定位失败层：`utils` / `baseline` / `vector_store` / `evaluation` / `tests`
+3. 检查日志、堆栈和失败测试
+4. 对照 `docs/` 与当前代码规范
+5. 修复根因，而不是只修表象
+
+## 修复要求
+- 为 bug 场景新增或更新单元测试
+- 新增或修改代码保持类型注解完整
+- 优先采用最小、定向的修改
+- 先运行相关测试子集，再视情况运行完整测试
 
 ## 输出格式
-请严格按以下结构输出：
-
 ```markdown
+## 问题分析
+**根因**: ...
+**影响文件**: path:line
+
+## 修复方案
+**修改内容**: ...
+**原因**: ...
+
+## 验证
+- [ ] 已为边界情况补充测试
+- [ ] 相关测试通过
+- [ ] 必要时完整测试通过
+```
+
+
+## 审查报告
+
+  · codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session
+[2m  ▎ thinking[0m
+  · codegraph: installed — symbol-graph tools available next session
+  · 12910 tok · in 12699 (6272 cached / 6427 new) · out 211 (97 reasoning) · ¥0.0207
+  -> read_file {"path": ".reasonix/python-naming-conventions.instructions.md"}
+  -> ls {"path": "src/elf"}
+  -> ls {"path": "docs"}
+[2m  ▎ thinking[0m
+  · 14926 tok · in 14742 (12800 cached / 1942 new) · out 184 (31 reasoning) · ¥0.0073
+  -> read_file {"path": "src/elf/diffusion.py"}
+  -> read_file {"path": "src/elf/encoder.py"}
+  -> read_file {"path": "src/utils/logger.py"}
+  -> read_file {"path": "src/utils/device.py"}
+[2m  ▎ thinking[0m
+  · 19174 tok · in 19015 (14848 cached / 4167 new) · out 159 (31 reasoning) · ¥0.0138
+  -> glob {"pattern": "tests/*.py"}
+  -> glob {"pattern": "Makefile"}
+  -> read_file {"path": "tests/test_elf_diffusion.py", "limit": 40}
+[2m  ▎ thinking[0m
+  · 19893 tok · in 19780 (19072 cached / 708 new) · out 113 (16 reasoning) · ¥0.0033
+  -> read_file {"path": "Makefile"}
+  -> read_file {"path": "docs/CODING_STYLE.md", "limit": 50}
+[2m  ▎ thinking[0m
+现在让我进一步检查现有代码中的一些细节，以便在审查时引用。
+  · 25359 tok · in 21232 (19840 cached / 1392 new) · out 4127 (4028 reasoning) · ¥0.0294
+  -> read_file {"path": "tests/conftest.py"}
+  -> read_file {"path": "tests/test_elf_encoder.py"}
+[2m  ▎ thinking[0m
+  · 28558 tok · in 27009 (25344 cached / 1665 new) · out 1549 (1482 reasoning) · ¥0.0149
+  -> read_file {"path": "docs/diffusion-rag-plan.md", "limit": 80}
+[2m  ▎ thinking[0m
 ## 审查文件
-- path/to/file.py
-- path/to/file.py
+- `src/elf/__init__.py`
+- `src/elf/pipeline.py`
+- `tests/test_elf_pipeline.py`
+- `task_prompt.txt`
+- `todo.md`
+
+---
 
 ## 问题列表
 
-### [高] 问题类型 / 逻辑 / 一致性 / 命名
-**文件**: path/to/file.py:行号
-**问题**: ...
-**建议**: ...
+### [中] 类 docstring `Attributes` 与实际存储的属性不一致
+**文件**: `src/elf/pipeline.py:64-68`
+**问题**: 类 docstring 的 `Attributes:` 节列出了 `model_fn: 去噪速度场函数。`，但 `__init__` 实际存储的是 `self._model_fn_cond` 和 `self._model_fn_uncond` 两个私有属性，不存在名为 `model_fn` 的公共属性。`encoder` 属性也没有在 `Attributes` 中提及。
+**建议**: 将 `Attributes` 节修正为与实际存储的属性一致：
 
-### [中] ...
-...
+```
+Attributes:
+    encoder: 底层文本编码器 (ELFEncoder)。
+```
 
-### [低] ...
-...
+`_model_fn_cond` 与 `_model_fn_uncond` 是私有属性，按仓库规范应使用 `_` 前缀且不列入公共 `Attributes`。
+
+---
+
+### [中] `get_device()` 被重复调用且仅用于日志
+**文件**: `src/elf/pipeline.py:97-98`
+**问题**: 当 `device="auto"` 时，`__init__` 的 `logger.info` 中为了打印设备名调用了 `get_device()`（触发 PyTorch CUDA 检测），随后 `ELFEncoder(device="auto")` 内部又会再次调用 `get_device()`。这一行仅为日志输出而触发 device 探测，且日志信息与 `ELFEncoder` 自身日志重复。
+**建议**: 将 device 解析提前，存储为 `self.device`，然后复用:
+
+```python
+self.device = get_device() if device == "auto" else device
+self.encoder = encoder or ELFEncoder(device=self.device)
+logger.info("ELFPipeline 已初始化 (device=%s, ...)", self.device, ...)
+```
+
+这样既去除了重复调用，也让 `ELFPipeline` 像 `ELFEncoder` 一样保留 `self.device`，便于外部查询。
+
+---
+
+### [低] 模块常量 `_DEFAULT_STEPS` / `_DEFAULT_NOISE_T` 与 `diffusion.py` 重复定义
+**文件**: `src/elf/pipeline.py:75-77`
+**问题**: `_DEFAULT_NOISE_T = 0.4` 与 `src/elf/diffusion.py:23` 中的 `DEFAULT_NOISE_T` 语义完全相同。如果后续维护中只修改了一处，会导致 pipeline 与 diffusion 默认值漂移。
+**建议**: 直接从 `diffusion` 导入公共常量，或改为在 pipeline 中引用 `diffusion.DEFAULT_NOISE_T`:
+
+```python
+from src.elf.diffusion import DEFAULT_NOISE_T
+```
+
+然后 `_DEFAULT_NOISE_T` 可以删除或改为 `DEFAULT_NOISE_T` 的别名。`_DEFAULT_STEPS` 同理——`denoise()` 自身默认 `steps=2`，可考虑引用同一来源。
+
+---
+
+### [低] `_default_model_fn` 测试 `test_zero_at_t_one` 命名与 docstring 误导
+**文件**: `tests/test_elf_pipeline.py:83-88`
+**问题**: 测试名为 `test_zero_at_t_one`，docstring 写 "t=1 时噪声尺度大，速度应很小"，但实际断言 `np.allclose(v, -z)`——速度等于 `-z` 而非"很小"。`sigma(1.0) = 1.0`，因此 `v = -z`，速度大小完全等于输入向量大小。
+**建议**: 修正测试名称和 docstring，例如改为 `test_velocity_equals_neg_z_at_t_one`，docstring 写明 "t=1 时 sigma=1, 速度 v = -z"。
+
+---
+
+### [低] `enhance_batch` 逐条串行循环，无批量加速
+**文件**: `src/elf/pipeline.py:179-188`
+**问题**: `enhance_batch` 内部逐条调用 `self.enhance()`，每条都独立执行 `encode → add_noise → denoise → cfg_guide → normalize`。`ELFEncoder.encode_batch()` 支持批量编码，但此处未利用。对于大量文本，性能会显著下降。
+**建议**: 当前实现作为 Phase 2.3 初版可接受，但建议在 `enhance_batch` 中先用 `self.encoder.encode_batch(texts)` 批量编码，然后在向量维度上批量执行扩散步骤。可加 `# TODO: 批量扩散优化` 注释标记。
+
+---
+
+### [低] `device` 参数未存储为实例属性
+**文件**: `src/elf/pipeline.py:86`
+**问题**: `__init__` 接收 `device` 参数但仅透传给 `ELFEncoder()`，自身不保存。用户无法通过 `pipe.device` 查询实际使用的设备。对比 `ELFEncoder` 存储了 `self.device`。
+**建议**: 与上面的 `get_device()` 问题一同解决，存储 `self.device`。
+
+---
 
 ## 总结
-- 高风险问题: N
-- 中风险问题: N
-- 低风险问题: N
-```
+- **高风险问题**: 0
+- **中风险问题**: 2（class docstring 属性不一致、get_device 重复调用仅用于日志）
+- **低风险问题**: 4（常量重复定义、测试命名误导、enhance_batch 串行、device 未存储）
+
+### 总体评价
+
+代码整体质量良好，符合仓库命名规范（PascalCase 类名、snake_case 函数、UPPER_SNAKE 常量、`_` 前缀私有函数），公共 API 均有完整类型注解和 Google 风格 docstring，无 `print()` 使用（全部使用 `logging`），29 个测试覆盖了编码、增强（有无 CFG）、确定性、不同参数、批量、空输入等场景。`__init__.py` 导出完整。无死代码、无不可达分支、无占位实现。
+
+2 个中风险问题建议优先修复——`Attributes` 文档错误和 `get_device()` 重复调用。4 个低风险问题可在后续迭代中处理。
+  · 31316 tok · in 29923 (28544 cached / 1379 new) · out 1393 (15 reasoning) · ¥0.0132
 
 
 ## 代码变更 Diff
