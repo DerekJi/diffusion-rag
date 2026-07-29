@@ -1,11 +1,11 @@
 # 开发任务
 
 ## Issue 描述
-标题: Phase 2.1: ELF 编码器封装
+标题: Phase 2.2: 扩散接口 + CFG
 需求:
-根据 docs/diffusion-rag-plan.md 中 Phase 2.1 的描述，实现 src/elf/encoder.py，不需要涉及扩散过程。
+实现 src/elf/diffusion.py 中的 add_noise / denoise / cfg_guide。
 
-验收：test_elf_encoder 全部通过
+验收：单元测试覆盖扩散正反向 + CFG scale 边界
 
 ## 项目开发规范
 请严格遵循以下仓库定义的标准来完成任务。
