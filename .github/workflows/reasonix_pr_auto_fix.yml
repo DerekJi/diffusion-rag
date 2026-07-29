@@ -18,8 +18,7 @@ permissions:
 
 jobs:
   auto_fix:
-    # 避免机器人自循环触发
-    if: github.event.pull_request.user.type != 'Bot'
+    # 由步骤 1 ~ 2 精确检查最新提交者来防止自循环（而非全局拦截 PR 创建者）
     runs-on: ubuntu-latest
 
     steps:
