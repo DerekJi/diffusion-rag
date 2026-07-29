@@ -214,7 +214,7 @@ jobs:
             ai-generated
             ready-for-review
 
-      # ── 10. 回复 Issue ──────────────────────────────────
+      # ── 11. 回复 Issue ──────────────────────────────────
       - name: Reply to Issue
         uses: actions/github-script@v7
         with:

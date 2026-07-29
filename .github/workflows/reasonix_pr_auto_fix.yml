@@ -82,7 +82,10 @@ jobs:
         run: |
           BODY='${{ github.event.pull_request.body }}'
           MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
-          if [ -z "$MODEL" ]; then MODEL="deepseek-flash"; fi
+          if [ -z "$MODEL" ]; then
+            MODEL="deepseek-flash"
+            echo "⚠️ 未指定 model，使用默认值 deepseek-flash" >> $GITHUB_STEP_SUMMARY
+          fi
           case "$MODEL" in
             pro|deepseek-pro)
               MODEL="deepseek-pro";;
