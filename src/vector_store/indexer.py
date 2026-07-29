@@ -8,6 +8,7 @@ import os
 
 import faiss
 import numpy as np
+from numpy.typing import NDArray
 
 from src.utils.logger import get_logger
 
@@ -48,7 +49,7 @@ class FAISSIndexer:
         """文档 ID 列表。"""
         return self._doc_ids
 
-    def build(self, vectors: np.ndarray, doc_ids: list[str]) -> None:
+    def build(self, vectors: NDArray[np.float32], doc_ids: list[str]) -> None:
         """从文档向量构建索引。
 
         Args:

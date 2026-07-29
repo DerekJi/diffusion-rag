@@ -4,36 +4,69 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+concurrency:
+  group: pr-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
   issues: write
+  workflows: write
 
 jobs:
   review_and_fix:
+    if: github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
 
     steps:
+      # ── 0. 检查最近提交者（防止自循环）────────────────────
+      - name: Check Latest Commit Author
+        id: check_author
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: commits } = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 1
+            });
+            const author = commits[0]?.author?.login || '';
+            const isBot = author === 'github-actions[bot]';
+            core.setOutput('skip', isBot ? 'true' : 'false');
+
+      # ── 0b. 如果最新提交是机器人则跳过 ──────────────────
+      - name: Skip if Bot Commit
+        if: steps.check_author.outputs.skip == 'true'
+        run: |
+          echo "最新提交来自 bot（${{ steps.check_author.outputs.author }}），跳过审查与修复。" >> $GITHUB_STEP_SUMMARY
+          exit 0
+
       # ── 1. 检出代码 + 获取完整 Git 历史 ──────────────────
       - name: Checkout Code
+        if: steps.check_author.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # ── 2. 设置 Python + Node ────────────────────────────
       - name: Setup Python
+        if: steps.check_author.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
 
       - name: Setup Node.js
+        if: steps.check_author.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       # ── 3. 缓存 HuggingFace 模型 ──────────────────────────
       - name: Cache HuggingFace Models
+        if: steps.check_author.outputs.skip != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
@@ -42,18 +75,21 @@ jobs:
 
       # ── 4. 安装依赖 ──────────────────────────────────────
       - name: Install Dependencies
+        if: steps.check_author.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       # ── 5. 生成 PR Diff ──────────────────────────────────
       - name: Generate Code Diff
+        if: steps.check_author.outputs.skip != 'true'
         run: |
           git diff origin/${{ github.base_ref }}...HEAD > pr_changes.diff
           echo "Diff size: $(wc -l < pr_changes.diff) lines"
 
       # ── 6. 阶段一：Code Review ───────────────────────────
       - name: Run Code Review
+        if: steps.check_author.outputs.skip != 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -70,18 +106,31 @@ jobs:
           cat pr_changes.diff >> review_prompt.txt
 
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat review_prompt.txt)" > .temp/review-report.md
 
       # ── 7. 发布审查报告到 PR ────────────────────────────
       - name: Post Review Comment
-        uses: mshick/github-actions-comment-on-pr@v3
+        if: steps.check_author.outputs.skip != 'true'
+        uses: actions/github-script@v7
         with:
-          file_path: ".temp/review-report.md"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('.temp/review-report.md', 'utf8');
+            const body = report.length > 0
+              ? report
+              : "🤖 **Reasonix** 审查完毕，未发现需要报告的问题。";
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
 
       # ── 8. 阶段二：根据 review 自动修复 ──────────────────
       - name: Auto-fix Based on Review
+        if: steps.check_author.outputs.skip != 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -106,12 +155,13 @@ jobs:
           cat pr_changes.diff >> fix_prompt.txt
 
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat fix_prompt.txt)"
 
       # ── 9. 验证修复后代码 ────────────────────────────────
       - name: Verify Fixes
         id: verify
+        if: steps.check_author.outputs.skip != 'true'
         continue-on-error: true
         run: |
           black . --line-length 100 --check
@@ -120,7 +170,7 @@ jobs:
 
       # ── 10. 第二轮修复（验证失败时） ────────────────────
       - name: Round 2 Fix if Needed
-        if: steps.verify.outcome == 'failure'
+        if: steps.check_author.outputs.skip != 'true' && steps.verify.outcome == 'failure'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
@@ -133,7 +183,7 @@ jobs:
           4. 重复直到全部绿色
           PROMPT_END
           npx reasonix@1.2.0 run \
-            --model deepseek-v4-pro \
+            --model deepseek-pro \
             "$(cat repair2.txt)"
 
           # 再验证一次
@@ -143,6 +193,7 @@ jobs:
 
       # ── 11. 提交并推送修复到 PR 分支 ────────────────────
       - name: Commit and Push Fixes
+        if: steps.check_author.outputs.skip != 'true'
         run: |
           git config --global user.name "Reasonix-AI-Developer"
           git config --global user.email "ai-developer@github.com"
@@ -161,6 +212,7 @@ jobs:
 
       # ── 12. 发布修复摘要到 PR ───────────────────────────
       - name: Post Fix Summary Comment
+        if: steps.check_author.outputs.skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |

@@ -9,7 +9,7 @@
 
 1. [目标与优势](#1-目标与优势)
 2. [操作链总览](#2-操作链总览)
-3. [三工作流详解](#3-三工作流详解)
+3. [四工作流详解](#3-四工作流详解)
 4. [Issue Body 配置参考](#4-issue-body-配置参考)
 5. [工作流架构图](#5-工作流架构图)
 6. [前置条件](#6-前置条件)
@@ -32,7 +32,7 @@
 | **全自动闭环** | 开发 → 审查 → 修复 → 验证 自动化 |
 | **节省本地资源** | 6GB 显存的本地 GPU 不需要跑模型推理 |
 | **可复现** | CI 环境一致，每次从零安装依赖 |
-| **省钱** | 默认 `deepseek-v4-flash`，仅复杂任务升级到 `pro` |
+| **省钱** | 默认 `deepseek-flash`，仅复杂任务升级到 `pro` |
 
 ---
 
@@ -47,15 +47,19 @@
                     │  → 提 PR                │
                     └──────────┬──────────────┘
                                │
-                               ▼
-                    ┌─────────────────────────┐
-                    │  reasonix-agent.yml      │
-                    │  AI 审查 PR + 自动修复   │
-                    │  → 评论审查报告          │
-                    │  → 修复代码 → Push       │
-                    └──────────┬──────────────┘
-                               │
-                               ▼
+                    ┌──────────┴──────────────┐
+                    │                         │
+                    ▼                         ▼
+     ┌────────────────────────┐  ┌────────────────────────┐
+     │  reasonix_pr_auto_fix  │  │  reasonix-agent.yml     │
+     │  静态检查 + 自动修复    │  │  AI 审查 PR             │
+     │  → 评论检查结果         │  │  → 评论审查报告         │
+     │  → 失败时自动修复→Push  │  │  → 修复问题 → Push      │
+     └──────────┬─────────────┘  └──────────┬─────────────┘
+                │                           │
+                └──────────┬───────────────┘
+                           │
+                           ▼
                     ┌─────────────────────────┐
                     │  你审查 PR，发现问题     │
                     │                         │
@@ -84,7 +88,7 @@ gh issue create \
   --title "Phase 2.1: 实现 ELF 编码器" \
   --body "
 type: code
-model: deepseek-v4-flash
+model: deepseek-flash
 level: medium
 
 根据 docs/diffusion-rag-plan.md 实现 ELFEncoder...
@@ -105,7 +109,7 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 
 ---
 
-## 3. 三工作流详解
+## 3. 四工作流详解
 
 ### 3.1 `reasonix_develop.yml` — Issue 驱动开发
 
@@ -122,13 +126,33 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 | 5. Extract Config | 从 Issue body 提取 `model:`、`level:`、`type:` |
 | 6. Formulate Prompt | 组装任务 Prompt，注入 `.reasonix/commands/` 规范 |
 | 7. `reasonix run` | AI 根据 Issue 开发代码 |
-| 8. Verify | `black` + `isort` + `mypy` + `pytest`（code 模式）/ 仅 `black` + `isort`（docs 模式） |
-| 9. Auto-fix | 验证失败时自动修复 |
-| 10. Git Config | 设置机器人身份 |
-| 11. Create PR | 使用 `peter-evans/create-pull-request` 创建 PR |
-| 12. Reply | 在 Issue 回复完成信息 |
+| 8. Format Check & Fix | `black + isort` 自动格式化 |
+| 9. Git Config | 设置机器人身份 |
+| 10. Create PR | 使用 `peter-evans/create-pull-request` 创建 PR |
+| 11. Reply | 在 Issue 回复完成信息 |
 
-### 3.2 `reasonix-agent.yml` — PR 审查 + 自动修复
+> **注意**：验证与自动修复已拆分为独立 workflow（`reasonix_pr_auto_fix.yml`），PR 创建后自动触发。
+
+### 3.2 `reasonix_pr_auto_fix.yml` — 静态检查 + 自动修复
+
+**触发**：PR 被创建或更新时（`pull_request: [opened, synchronize]`）
+
+**流程**：
+
+| 步骤 | 说明 |
+|------|------|
+| 1. Check Author | 检查最新提交者，如果是 bot 则跳过（防止自循环） |
+| 2-5. 准备环境 | Checkout + Python + Node + pip install |
+| 6. Run Static Checks | `black --check` + `isort --check-only` + `mypy --strict` + `pytest --cov` |
+| 7. Post Results | 将检查结果以表格形式评论到 PR |
+| 8. Skip if Passed | 全部通过则跳过修复步骤 |
+| 9. Auto-fix | 运行 Reasonix 自动修复格式/类型/测试问题 |
+| 10. Commit & Push | 修复变更提交并推送到 PR 分支 |
+| 11. Post Result | 评论修复结果（成功/需人工介入） |
+
+> 此 workflow 将格式检查、类型检查、测试分别独立报告，避免单一状态变量误导。
+
+### 3.3 `reasonix-agent.yml` — PR 审查 + 自动修复
 
 **触发**：PR 被创建或更新时
 
@@ -146,7 +170,7 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 | 11. Commit & Push | 推送修复到 PR 分支 |
 | 12. Post Summary | 评论修复结果 |
 
-### 3.3 `reasonix_pr_feedback.yml` — 在线 /fix 反馈
+### 3.4 `reasonix_pr_feedback.yml` — 在线 /fix 反馈
 
 **触发**：PR 评论区出现包含 `/fix` 的评论
 
@@ -174,7 +198,7 @@ CI 自动完成：开发 → 测试 → 提 PR → 审查 → 修复。
 ```yaml
 ---
 type: code          # code（默认）| docs
-model: deepseek-v4-flash  # flash（默认）| pro
+model: deepseek-flash  # flash（默认）| pro
 level: medium        # low | medium（默认）| high
 ---
 ```
@@ -184,7 +208,7 @@ level: medium        # low | medium（默认）| high
 | 字段 | 默认值 | 可选值 | 说明 |
 |------|--------|--------|------|
 | `type` | `code` | `code` / `docs` | 任务类型。`code` 触发完整测试流程；`docs` 仅检查格式 |
-| `model` | `deepseek-v4-flash` | `flash` / `pro` | AI 模型。flash 省钱，pro 更强 |
+| `model` | `deepseek-flash` | `flash` / `pro` | AI 模型。flash 省钱，pro 更强 |
 | `level` | `medium` | `low` / `medium` / `high` | 推理深度。对应 `reasonix run --effort` |
 
 **注意**：`ai-dev` 标签需要手动添加，Issue 创建时不自动打上，以实现完整控制。
@@ -193,7 +217,7 @@ level: medium        # low | medium（默认）| high
 
 ```markdown
 type: code
-model: deepseek-v4-pro
+model: deepseek-pro
 level: high
 
 根据 docs/diffusion-rag-plan.md 中 Phase 2.1 的描述，实现 src/elf/encoder.py。
@@ -215,36 +239,39 @@ level: low
 ## 5. 工作流架构图
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        GitHub Repository                            │
-│                                                                     │
-│  ┌──────────────┐   ┌──────────────────┐   ┌──────────────────────┐ │
-│  │ issue → ai-dev│   │   PR created     │   │   PR /fix comment   │ │
-│  └──────┬───────┘   └────────┬─────────┘   └──────────┬───────────┘ │
-│         │                    │                        │             │
-│         ▼                    ▼                        ▼             │
-│  ┌──────────────┐   ┌──────────────────┐   ┌──────────────────────┐ │
-│  │ develop.yml  │   │   agent.yml      │   │  pr_feedback.yml     │ │
-│  │              │   │                  │   │                      │ │
-│  │ Extract      │   │ Generate Diff    │   │ Get PR Branch        │ │
-│  │ Config       │   │                  │   │                      │ │
-│  │              │   │ Review (code-    │   │ Extract Config       │ │
-│  │ Formulate    │   │ review.md)       │   │                      │ │
-│  │ Prompt       │   │                  │   │ Fix (fix-bug.md)     │ │
-│  │              │   │ Fix (fix-bug.md) │   │                      │ │
-│  │ run → verify │   │                  │   │ verify → push        │ │
-│  │ → PR         │   │ verify → push    │   │ → reply              │ │
-│  └──────┬───────┘   └────────┬─────────┘   └──────────┬───────────┘ │
-│         │                    │                        │             │
-│         ▼                    ▼                        ▼             │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  .reasonix/commands/                                        │   │
-│  │  ├── develop.md      — 开发规范                             │   │
-│  │  ├── code-review.md   — 审查标准                            │   │
-│  │  ├── fix-bug.md       — 修复流程                            │   │
-│  │  └── feature.md       — 功能实现流程                         │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        GitHub Repository                                │
+│                                                                         │
+│  ┌──────────────┐   ┌──────────────────────────────┐   ┌─────────────┐ │
+│  │ issue → ai-dev│   │       PR created             │   │ PR /fix     │ │
+│  │               │   │  (opened / synchronize)      │   │ comment     │ │
+│  └──────┬───────┘   └──────────┬───────────────────┘   └──────┬──────┘ │
+│         │                      │                              │        │
+│         ▼              ┌───────┴───────┐                      │        │
+│  ┌──────────────┐      │               │                      │        │
+│  │ develop.yml  │      ▼               ▼                      │        │
+│  │              │  ┌────────────┐ ┌──────────┐               │        │
+│  │ Extract      │  │ pr_auto_fix│ │ agent.yml│               │        │
+│  │ Config       │  │            │ │          │               │        │
+│  │              │  │ Static     │ │ Generate │               │        │
+│  │ Formulate    │  │ Checks     │ │ Diff     │               │        │
+│  │ Prompt       │  │            │ │          │               │        │
+│  │              │  │ Post       │ │ Review   │               │        │
+│  │ run → PR     │  │ Results    │ │          │               │        │
+│  │              │  │            │ │ Fix →    │               ▼        │
+│  │              │  │ Auto-fix   │ │ Push     │  ┌──────────────────┐  │
+│  │              │  │ → Push     │ │          │  │ pr_feedback.yml  │  │
+│  └──────┬───────┘  └──────┬─────┘ └─────┬────┘  │                  │  │
+│         │                 │             │       │ Fix → verify     │  │
+│         ▼                 ▼             ▼       │ → push → reply   │  │
+│  ┌──────────────────────────────────────────────┴─────────────────┐  │
+│  │  .reasonix/commands/                                          │  │
+│  │  ├── develop.md      — 开发规范                               │  │
+│  │  ├── code-review.md   — 审查标准                              │  │
+│  │  ├── fix-bug.md       — 修复流程                              │  │
+│  │  └── feature.md       — 功能实现流程                           │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

@@ -1,0 +1,229 @@
+name: Reasonix PR Auto-fix
+
+# 触发：PR 创建或更新时自动修复格式/类型/测试问题
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  # 与 reasonix-agent.yml 共享同一 group，防止两个 workflow 同时
+  # push 到同一 PR 分支导致 git 竞态冲突
+  group: pr-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  workflows: write
+
+jobs:
+  auto_fix:
+    # 避免机器人自循环触发
+    if: github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. 检查最近提交者（防止自循环）────────────────────
+      - name: Check Latest Commit Author
+        id: check_author
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: commits } = await github.rest.pulls.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 1
+            });
+            const author = commits[0]?.author?.login || '';
+            const isBot = author === 'github-actions[bot]';
+            core.setOutput('skip', isBot ? 'true' : 'false');
+            core.setOutput('author', author);
+
+      # ── 2. 如果最新提交是机器人则跳过 ─────────────────────
+      - name: Skip if Bot Commit
+        if: steps.check_author.outputs.skip == 'true'
+        run: |
+          echo "最新提交来自 ${{ steps.check_author.outputs.author }}，跳过自动修复。" >> $GITHUB_STEP_SUMMARY
+
+      # ── 3. 检出 PR 代码 ──────────────────────────────────
+      - name: Checkout Code
+        if: steps.check_author.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 4. 设置 Python + Node ────────────────────────────
+      - name: Setup Python
+        if: steps.check_author.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Setup Node.js
+        if: steps.check_author.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 5. 安装依赖 ──────────────────────────────────────
+      - name: Install Dependencies
+        if: steps.check_author.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+        shell: bash
+
+      # ── 5b. 提取 PR body 中的 model 配置 ─────────────────
+      - name: Extract Model Config
+        id: model_cfg
+        if: steps.check_author.outputs.skip != 'true'
+        shell: bash
+        run: |
+          BODY='${{ github.event.pull_request.body }}'
+          MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$MODEL" ]; then
+            MODEL="deepseek-flash"
+            echo "⚠️ 未指定 model，使用默认值 deepseek-flash" >> $GITHUB_STEP_SUMMARY
+          fi
+          case "$MODEL" in
+            pro|deepseek-pro)
+              MODEL="deepseek-pro";;
+            flash|deepseek-flash|*)
+              MODEL="deepseek-flash";;
+          esac
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
+          echo "使用模型: $MODEL"
+
+      # ── 6. 运行格式检查 ────────────────────────────────
+      - name: Check Formatting
+        id: format
+        if: steps.check_author.outputs.skip != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "### black + isort" >> $GITHUB_STEP_SUMMARY
+          black . --line-length 100 --check 2>&1 | tail -5
+          isort . --check-only 2>&1 | tail -5
+
+      # ── 7. 运行类型检查 ────────────────────────────────
+      - name: Type Check
+        id: typecheck
+        if: steps.check_author.outputs.skip != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "### mypy" >> $GITHUB_STEP_SUMMARY
+          mypy src/ --strict 2>&1 | tail -5
+
+      # ── 8. 运行测试 ────────────────────────────────────
+      - name: Run Tests
+        id: test
+        if: steps.check_author.outputs.skip != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          echo "### pytest" >> $GITHUB_STEP_SUMMARY
+          pytest tests/ -q -m "not slow" --cov=src --cov-report=term-missing 2>&1 | tail -20
+
+      # ── 9. 评论检查结果到 PR ────────────────────────────
+      - name: Post Check Results to PR
+        if: steps.check_author.outputs.skip != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fmt = '${{ steps.format.outcome }}';
+            const typ = '${{ steps.typecheck.outcome }}';
+            const tst = '${{ steps.test.outcome }}';
+            const emoji = (s) => s === 'success' ? '✅' : '❌';
+            const label = (s) => s === 'success' ? '通过' : '失败';
+            const allPass = fmt === 'success' && typ === 'success' && tst === 'success';
+            const passCount = (fmt === 'success' ? 1 : 0) + (typ === 'success' ? 1 : 0) + (tst === 'success' ? 1 : 0);
+
+            const body = `## 🔍 静态检查结果\n\n| 检查项 | 状态 |\n|--------|------|\n| ${emoji(fmt)} black + isort | ${label(fmt)} |\n| ${emoji(typ)} mypy (strict) | ${label(typ)} |\n| ${emoji(tst)} pytest --cov | ${label(tst)} |\n\n**${passCount}/3 项通过**\n`;
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      # ── 10. 全部通过则跳过 ──────────────────────────────
+      - name: Skip Fix if All Passed
+        if: steps.format.outcome == 'success' && steps.typecheck.outcome == 'success' && steps.test.outcome == 'success'
+        run: |
+          echo "所有检查通过，无需修复。" >> $GITHUB_STEP_SUMMARY
+
+      # ── 11. 自动修复失败项 ──────────────────────────────
+      - name: Auto-fix with Reasonix
+        if: |
+          steps.check_author.outputs.skip != 'true' &&
+          (steps.format.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.test.outcome == 'failure')
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        shell: bash
+        run: |
+          echo "检查失败，运行 AI 自动修复..." >> $GITHUB_STEP_SUMMARY
+
+          cat > fix_prompt.txt << 'FIX_EOF'
+          项目静态检查或测试失败。请读取以上错误信息，逐项修复：
+
+          1. 修复代码格式 / 类型错误 / 测试失败
+          2. 运行 black . --line-length 100 && isort .
+          3. 运行 pytest tests/ -q -m "not slow" 确认通过
+          4. 重复直到全部绿色
+
+          遵循 .reasonix/commands/fix-bug.md 的修复流程。
+          FIX_EOF
+
+          npx reasonix@1.2.0 run --model "${{ steps.model_cfg.outputs.model }}" "$(cat fix_prompt.txt)"
+
+      # ── 12. 提交并推送修复 ─────────────────────────────
+      - name: Commit and Push Fixes
+        if: |
+          steps.check_author.outputs.skip != 'true' &&
+          (steps.format.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.test.outcome == 'failure')
+        run: |
+          git config --global user.name "Reasonix-AI-Developer"
+          git config --global user.email "ai-developer@github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "fix: auto-fix CI check failures
+
+            🤖 Auto-fix by Reasonix + DeepSeek"
+            git push origin ${{ github.head_ref }}
+            echo "CHANGED=true" >> $GITHUB_ENV
+            echo "修复已推送。" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "CHANGED=false" >> $GITHUB_ENV
+            echo "修复未产生代码变更。" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── 13. 评论修复结果 ────────────────────────────────
+      - name: Post Auto-fix Result
+        if: |
+          steps.check_author.outputs.skip != 'true' &&
+          (steps.format.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.test.outcome == 'failure')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const changed = process.env.CHANGED;
+
+            let body;
+            if (changed === 'true') {
+              body = '🔧 **Auto-fix**: 已自动修复检查失败项并推送，请刷新查看最新 Diff。';
+            } else {
+              body = '⚠️ **Auto-fix**: 检查失败但自动修复未产生变更，请人工介入检查。';
+            }
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
