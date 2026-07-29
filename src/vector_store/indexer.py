@@ -5,6 +5,7 @@
 
 import json
 import os
+from typing import Any
 
 import faiss
 import numpy as np
@@ -48,7 +49,7 @@ class FAISSIndexer:
         """文档 ID 列表。"""
         return self._doc_ids
 
-    def build(self, vectors: np.ndarray, doc_ids: list[str]) -> None:
+    def build(self, vectors: np.ndarray[Any, Any], doc_ids: list[str]) -> None:
         """从文档向量构建索引。
 
         Args:

@@ -6,6 +6,7 @@
 
 import numpy as np
 import torch
+from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
 from src.utils.device import get_device
@@ -43,7 +44,7 @@ class BaselineEncoder:
             logger.error("模型加载失败: %s", e)
             raise RuntimeError(f"无法加载模型 {model_name}: {e}") from e
 
-    def encode(self, text: str) -> np.ndarray:
+    def encode(self, text: str) -> NDArray[np.float32]:
         """将单条文本编码为 768-dim 向量。
 
         Args:
@@ -68,7 +69,7 @@ class BaselineEncoder:
         vec = np.asarray(vec, dtype=np.float32).reshape(-1)
         return vec
 
-    def encode_batch(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+    def encode_batch(self, texts: list[str], batch_size: int = 32) -> NDArray[np.float32]:
         """批量编码。
 
         Args:
