@@ -56,7 +56,7 @@ class ELFEncoder:
         self.device = get_device() if device == "auto" else device
 
         if not _HAS_SENTENCE_TRANSFORMERS:
-            raise RuntimeError(
+            raise RuntimeError(  # pragma: no cover
                 "sentence-transformers 未安装。请运行: pip install sentence-transformers"
             )
 
