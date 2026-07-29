@@ -1,11 +1,50 @@
 # 开发任务
 
 ## Issue 描述
-标题: Phase 2.3: Pipeline 集成 + 测试
+标题: 接入 ELF 原生模型：替换 BGE 占位实现
 需求:
-实现 src/elf/pipeline.py 整合编码器+扩散+CFG 的完整链路。
+## 问题描述
 
-验收：全部 8+ 测试通过 + make check 通过
+当前 （）底层使用  + ，与  完全相同。ELF 特有的扩散增强链路仅在一个 BGE 向量上做噪声操作，缺乏 ELF 原生模型的流匹配（flow matching）速度场。
+
+### 文档要求
+
+> "基于官方  实现 encode()/denoise()/cfg_guide()"
+
+## 具体任务
+
+### 1. 创建  — ELFNativeEncoder
+- 从 HuggingFace Hub 加载 ELF-B 权重（ 或类似名称）
+- 调用 ELF 原生  输出 768-dim L2 归一化向量
+- 接口与  一致（）
+- 支持  自动检测
+
+### 2. 创建  — ELFModelWrapper
+- 包装 ELF 模型的  为速度场函数
+- 签名：
+- 支持条件/无条件两种模式（用于 CFG）
+- 与  /  /  的接口兼容
+
+### 3. 更新 
+- 默认使用  代替 
+- 支持  在 ELF 原生 vs 简易基准间切换
+
+### 4. 单元测试
+-  — mock ELF 模型，测试接口一致性
+-  — 验证速度场输出 shape/dtype
+
+## 验收标准
+
+- [ ]  且 dtype==float32
+- [ ]  输出 shape 与 z 一致、dtype==float32
+- [ ]  正常工作
+- [ ] 所有现有 87 个测试仍通过
+- [ ] black . --line-length 100 --check
+isort . --check-only
+Skipped 1 files
+mypy src/ --strict
+Success: no issues found in 19 source files
+All static checks passed. 通过
 
 ## 项目开发规范
 请严格遵循以下仓库定义的标准来完成任务。
