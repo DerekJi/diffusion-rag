@@ -171,13 +171,23 @@ jobs:
           npx reasonix@1.2.0 run --model "$MODEL" "$(cat task_prompt.txt)"
         shell: bash
 
-      # ── 8. 配置 Git 身份 ─────────────────────────────────
+      # ── 8. 快速格式验证 + 修复 ───────────────────────────
+      - name: Format Check & Fix (black + isort)
+        continue-on-error: false
+        run: |
+          echo "### black + isort" >> $GITHUB_STEP_SUMMARY
+          black . --line-length 100 2>&1 | tail -5
+          isort . 2>&1 | tail -5
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ 格式修复完成（如有变更将在下一步提交）。" >> $GITHUB_STEP_SUMMARY
+
+      # ── 9. 配置 Git 身份 ─────────────────────────────────
       - name: Configure Git
         run: |
           git config --global user.name "Reasonix-AI-Developer"
           git config --global user.email "ai-developer@github.com"
 
-      # ── 9. 创建 Pull Request ────────────────────────────
+      # ── 10. 创建 Pull Request ───────────────────────────
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
         with:

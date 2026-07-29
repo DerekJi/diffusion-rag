@@ -6,8 +6,8 @@ on:
     types: [opened, synchronize]
 
 concurrency:
-  group: pr-auto-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: pr-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -73,6 +73,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
         shell: bash
+
+      # ── 5b. 提取 PR body 中的 model 配置 ─────────────────
+      - name: Extract Model Config
+        id: model_cfg
+        if: steps.check_author.outputs.skip != 'true'
+        shell: bash
+        run: |
+          BODY='${{ github.event.pull_request.body }}'
+          MODEL=$(echo "$BODY" | grep -im1 '^model:' | sed 's/.*:[[:space:]]*//' | tr '[:upper:]' '[:lower:]' | xargs || echo "")
+          if [ -z "$MODEL" ]; then MODEL="deepseek-flash"; fi
+          case "$MODEL" in
+            pro|deepseek-pro)
+              MODEL="deepseek-pro";;
+            flash|deepseek-flash|*)
+              MODEL="deepseek-flash";;
+          esac
+          echo "model=$MODEL" >> $GITHUB_OUTPUT
+          echo "使用模型: $MODEL"
 
       # ── 6. 运行格式检查 ────────────────────────────────
       - name: Check Formatting
@@ -156,7 +174,7 @@ jobs:
           遵循 .reasonix/commands/fix-bug.md 的修复流程。
           FIX_EOF
 
-          npx reasonix@1.2.0 run --model "deepseek-flash" "$(cat fix_prompt.txt)"
+          npx reasonix@1.2.0 run --model "${{ steps.model_cfg.outputs.model }}" "$(cat fix_prompt.txt)"
 
       # ── 12. 提交并推送修复 ─────────────────────────────
       - name: Commit and Push Fixes
