@@ -11,6 +11,8 @@ CFG 引导 (cfg_guide) 的完整链路。
     vec = pipe.encode("query text")
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
 
 import numpy as np
@@ -18,6 +20,7 @@ from numpy.typing import NDArray
 
 from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, cfg_guide, denoise, sigma
 from src.elf.encoder import ELFEncoder
+from src.elf.native_encoder import ELFNativeEncoder
 from src.utils.device import get_device
 from src.utils.logger import get_logger
 
@@ -59,32 +62,43 @@ _DEFAULT_CFG_SCALE: float = 2.0
 class ELFPipeline:
     """ELF 扩散增强链路。
 
-    整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise)
+    整合编码器 (ELFNativeEncoder)、扩散正反向 (add_noise / denoise)
     与 CFG 引导 (cfg_guide) 的完整链路。
 
+    默认使用 ELFNativeEncoder（原生 ELF 模型），可通过 use_native=False
+    切换为 BGE 基线编码器。
+
     Attributes:
-        encoder: 底层文本编码器 (ELFEncoder)。
+        encoder: 底层文本编码器 (ELFNativeEncoder | ELFEncoder)。
         device: 实际使用的设备字符串。
     """
 
     def __init__(
         self,
-        encoder: ELFEncoder | None = None,
+        encoder: ELFEncoder | ELFNativeEncoder | None = None,
         model_fn_cond: Callable[[NDArray[np.float32], float], NDArray[np.float32]] | None = None,
         model_fn_uncond: Callable[[NDArray[np.float32], float], NDArray[np.float32]] | None = None,
         device: str = "auto",
+        use_native: bool = True,
     ) -> None:
         """初始化 ELF 增强链路。
 
         Args:
-            encoder: ELFEncoder 实例。若为 None 则自动创建。
+            encoder: 编码器实例。若为 None 则根据 use_native 自动创建。
             model_fn_cond: 条件去噪速度场函数。若为 None 使用默认简易模型。
             model_fn_uncond: 无条件去噪速度场函数。
                             若为 None 则与 model_fn_cond 相同。
             device: 设备字符串，"auto" 表示自动检测。
+            use_native: 为 True 时默认使用 ELFNativeEncoder，
+                       为 False 时使用 ELFEncoder（BGE 基线）。
         """
         self.device = get_device() if device == "auto" else device
-        self.encoder = encoder or ELFEncoder(device=self.device)
+        if encoder is not None:
+            self.encoder = encoder
+        elif use_native:
+            self.encoder = ELFNativeEncoder(device=self.device)
+        else:
+            self.encoder = ELFEncoder(device=self.device)
         self._model_fn_cond = model_fn_cond
         self._model_fn_uncond = model_fn_uncond or model_fn_cond
 
