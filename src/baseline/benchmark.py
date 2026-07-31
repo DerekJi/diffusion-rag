@@ -31,6 +31,7 @@ from src.config import (
     DEFAULT_SEED,
     METHOD_BASELINE,
     METHOD_ELF,
+    SUPPORTED_DATASETS,
     SUPPORTED_METHODS,
 )
 from src.elf.pipeline import ELFPipeline
@@ -213,7 +214,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset",
         default="nfcorpus",
-        choices=["nfcorpus", "msmarco", "nq", "fiqa"],
+        choices=list(SUPPORTED_DATASETS),
         help="数据集名称",
     )
     parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称（文档侧）")

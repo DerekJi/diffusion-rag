@@ -29,10 +29,14 @@ def write_summary_csv(summary: pd.DataFrame, output_dir: str, dataset: str) -> P
     Returns:
         写入的 CSV 文件路径。
     """
-    out_dir = Path(output_dir) / dataset
-    out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "summary.csv"
-    summary.to_csv(csv_path, index=False)
+    try:
+        out_dir = Path(output_dir) / dataset
+        out_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = out_dir / "summary.csv"
+        summary.to_csv(csv_path, index=False)
+    except OSError as exc:
+        logger.error("写入 CSV 对比表失败: %s", exc)
+        raise
     logger.info("对比表已保存: %s (%d 行)", csv_path, len(summary))
     return csv_path
 
@@ -50,29 +54,33 @@ def write_json_summary(summary: pd.DataFrame, output_dir: str, dataset: str) -> 
     Returns:
         写入的 JSON 文件路径。
     """
-    out_dir = Path(output_dir) / dataset
-    out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / "summary.json"
+    try:
+        out_dir = Path(output_dir) / dataset
+        out_dir.mkdir(parents=True, exist_ok=True)
+        json_path = out_dir / "summary.json"
 
-    records = [_sanitize(row) for row in summary.to_dict(orient="records")]
-    baseline_row = next((r for r in records if r.get("method") == METHOD_BASELINE), None)
-    elf_rows = [r for r in records if r.get("method") == METHOD_ELF]
-    best_elf: dict[str, object] | None = (
-        max(elf_rows, key=lambda r: float(cast(float, r.get("recall@10", 0.0))))
-        if elf_rows
-        else None
-    )
+        records = [_sanitize(row) for row in summary.to_dict(orient="records")]
+        baseline_row = next((r for r in records if r.get("method") == METHOD_BASELINE), None)
+        elf_rows = [r for r in records if r.get("method") == METHOD_ELF]
+        best_elf: dict[str, object] | None = (
+            max(elf_rows, key=lambda r: float(cast(float, r.get("recall@10", 0.0))))
+            if elf_rows
+            else None
+        )
 
-    payload: dict[str, object] = {
-        "dataset": dataset,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "n_groups": len(records),
-        "baseline": baseline_row,
-        "best_elf": best_elf,
-        "groups": records,
-    }
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+        payload: dict[str, object] = {
+            "dataset": dataset,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "n_groups": len(records),
+            "baseline": baseline_row,
+            "best_elf": best_elf,
+            "groups": records,
+        }
+        with json_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        logger.error("写入 JSON 摘要失败: %s", exc)
+        raise
     logger.info("JSON 摘要已保存: %s", json_path)
     return json_path
 

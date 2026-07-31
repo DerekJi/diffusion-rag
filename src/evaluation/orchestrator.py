@@ -29,21 +29,20 @@ from src.config import (
     DEFAULT_ELF_NOISE_T,
     DEFAULT_ELF_STEPS,
     DEFAULT_ENCODER,
+    DEFAULT_GRID_CONFIG,
     DEFAULT_INDEX_NLIST,
     DEFAULT_K_VALUES,
+    DEFAULT_OUTPUT_DIR,
     DEFAULT_SEED,
     METHOD_BASELINE,
     METHOD_ELF,
+    SUPPORTED_DATASETS,
 )
 from src.evaluation.reporter import write_json_summary, write_summary_csv
 from src.utils.logger import get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
-
-_SUPPORTED_DATASETS = ["nfcorpus", "msmarco", "nq", "fiqa"]
-_DEFAULT_CONFIG = "experiments/configs/param_grid.yaml"
-_DEFAULT_OUTPUT_DIR = "experiments/outputs"
 
 
 @dataclass
@@ -67,8 +66,17 @@ class ExperimentConfig:
     k_values: list[int] = field(default_factory=lambda: list(DEFAULT_K_VALUES))
     seed: int = DEFAULT_SEED
     sample: int | None = None
-    output_dir: str = _DEFAULT_OUTPUT_DIR
+    output_dir: str = DEFAULT_OUTPUT_DIR
     elf_param_list: list[dict[str, object]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """校验配置字段的基本合法性，fail-fast 避免深层传播。"""
+        if not all(k > 0 for k in self.k_values):
+            raise ValueError(f"k_values 必须全部为正整数，got {self.k_values}")
+        if self.seed < 0:
+            raise ValueError(f"seed 不能为负数，got {self.seed}")
+        if self.index_nlist <= 0:
+            raise ValueError(f"index_nlist 必须为正整数，got {self.index_nlist}")
 
 
 def load_param_grid(path: str | Path) -> ExperimentConfig:
@@ -133,7 +141,7 @@ def load_param_grid(path: str | Path) -> ExperimentConfig:
         k_values=[int(k) for k in k_raw],
         seed=int(eval_cfg.get("seed", DEFAULT_SEED)),
         sample=int(sample_raw) if sample_raw is not None else None,
-        output_dir=str(eval_cfg.get("output_dir", _DEFAULT_OUTPUT_DIR)),
+        output_dir=str(eval_cfg.get("output_dir", DEFAULT_OUTPUT_DIR)),
         elf_param_list=elf_param_list,
     )
 
@@ -219,9 +227,9 @@ def _run_group(
             seed=config.seed,
             output_dir=config.output_dir,
             sample=sample,
-            elf_steps=int(cast(int, elf_params["steps"])),
-            elf_noise_t=float(cast(float, elf_params["noise_t"])),
-            elf_cfg_scale=float(cast(float, elf_params["cfg_scale"])),
+            elf_steps=cast(int, elf_params["steps"]),
+            elf_noise_t=cast(float, elf_params["noise_t"]),
+            elf_cfg_scale=cast(float, elf_params["cfg_scale"]),
         )
         config_id = str(elf_params["id"])
     else:
@@ -309,13 +317,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="评测编排器: 遍历参数网格，跑双链路对比评测")
     parser.add_argument(
         "--config",
-        default=_DEFAULT_CONFIG,
-        help=f"参数网格 YAML 配置路径（默认 {_DEFAULT_CONFIG}）",
+        default=DEFAULT_GRID_CONFIG,
+        help=f"参数网格 YAML 配置路径（默认 {DEFAULT_GRID_CONFIG}）",
     )
     parser.add_argument(
         "--dataset",
         default=None,
-        choices=_SUPPORTED_DATASETS,
+        choices=list(SUPPORTED_DATASETS),
         help="覆盖配置中的数据集名称",
     )
     parser.add_argument(
