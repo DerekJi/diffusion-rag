@@ -183,14 +183,23 @@ class ELFPipeline:
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
-        """批量增强（逐条串行，Phase 2.3 初版）。
+        """批量增强: 先批量编码，再在向量维度上批量执行扩散步骤。
+
+        相比逐条串行调用 enhance()，本方法只调用一次批量编码
+        （encode_batch），且加噪 / 去噪 / 归一化全部走 numpy 批量
+        向量运算，大幅减少模型前向传播次数。
+
+        rng 语义：批量路径用同一个 rng 按行（row-major）消费噪声流，
+        因此结果等价于把同一个 rng 实例逐条传给 enhance() 后堆叠；
+        若逐条调用时各自新建相同种子的 rng，则每条会得到相同噪声，
+        与批量路径不一致。
 
         Args:
             texts: 文本列表。
             steps: 去噪步数。
             noise_t: 加噪强度。
             cfg_scale: CFG 引导强度。
-            rng: 可选随机数生成器。
+            rng: 可选随机数生成器（固定种子用）。
 
         Returns:
             shape (len(texts), 768) float32 数组。
@@ -198,11 +207,34 @@ class ELFPipeline:
         if not texts:
             raise ValueError("文本列表不能为空")
 
-        # TODO: 批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，
-        # 再在向量维度上批量执行扩散步骤。
-        results: list[NDArray[np.float32]] = []
-        for text in texts:
-            vec = self.enhance(text, steps=steps, noise_t=noise_t, cfg_scale=cfg_scale, rng=rng)
-            results.append(vec)
+        # Step 1: 批量编码 (N, 768)
+        z_0 = self.encoder.encode_batch(texts)
 
-        return np.stack(results, axis=0)
+        # Step 2: 批量加噪 (N, 768)
+        z_t = add_noise(z_0, t=noise_t, rng=rng)
+
+        # Step 3: Velocity 级 CFG 批量去噪（每步同时处理全部 N 条向量）
+        cond_fn = self._model_fn_cond or _default_model_fn
+        uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
+        z_out = denoise_with_cfg(
+            z_t,
+            cond_fn=cond_fn,
+            uncond_fn=uncond_fn,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            t_start=noise_t,
+        )
+
+        # Step 4: 逐行 L2 归一化
+        norms = np.asarray(np.linalg.norm(z_out, axis=1, keepdims=True))
+        safe_norms = np.where(norms > 1e-8, norms, 1.0)
+        z_out = np.asarray(z_out / safe_norms, dtype=np.float32)
+
+        logger.debug(
+            "enhance_batch: n=%d, steps=%d, noise_t=%.2f, cfg_scale=%.1f",
+            len(texts),
+            steps,
+            noise_t,
+            cfg_scale,
+        )
+        return z_out

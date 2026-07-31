@@ -15,6 +15,35 @@ from src.elf.pipeline import ELFPipeline, _default_model_fn
 # ──────────────────────────────────────────────
 
 
+class _FakeEncoder:
+    """测试用假编码器：每段文本映射到固定的 768-dim 向量。
+
+    实现 encode / encode_batch，并统计调用次数，
+    用于验证批量路径只调用一次批量编码。
+    """
+
+    def __init__(self) -> None:
+        rng = np.random.RandomState(42)
+        self._vecs = rng.randn(64, 768).astype(np.float32)
+        self._vecs /= np.linalg.norm(self._vecs, axis=1, keepdims=True)
+        self._table: dict[str, np.ndarray] = {}
+        self.encode_calls = 0
+        self.encode_batch_calls = 0
+
+    def _vec_for(self, text: str) -> np.ndarray:
+        if text not in self._table:
+            self._table[text] = self._vecs[len(self._table) % len(self._vecs)]
+        return self._table[text]
+
+    def encode(self, text: str) -> np.ndarray:
+        self.encode_calls += 1
+        return self._vec_for(text)
+
+    def encode_batch(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+        self.encode_batch_calls += 1
+        return np.stack([self._vec_for(text) for text in texts])
+
+
 @pytest.fixture(autouse=True)
 def _mock_encoder() -> None:
     """mock ELFEncoder 的 SentenceTransformer，返回固定 768-dim 向量。
@@ -296,6 +325,76 @@ class TestELFPipeline:
         pipe = ELFPipeline(device="cpu")
         with pytest.raises(ValueError, match="不能为空"):
             pipe.enhance_batch([])
+
+    def test_enhance_batch_encodes_once(self) -> None:
+        """批量编码只调用 1 次（不是逐条调用 N 次）。"""
+        encoder = _FakeEncoder()
+        pipe = ELFPipeline(device="cpu", encoder=encoder)
+        pipe.enhance_batch(["a", "b", "c"], steps=2, noise_t=0.4, cfg_scale=1.0)
+        assert encoder.encode_batch_calls == 1
+        assert encoder.encode_calls == 0
+
+    def test_enhance_batch_matches_individual(self) -> None:
+        """批量输出与逐条输出数值一致（相同 seed + 相同输入）。
+
+        批量路径用同一个 rng 按行消费噪声流，等价于把同一个 rng
+        逐条传给 enhance()。
+        """
+        pipe = ELFPipeline(device="cpu", encoder=_FakeEncoder())
+        texts = ["query one", "query two", "query three"]
+        batch_vecs = pipe.enhance_batch(
+            texts, steps=2, noise_t=0.4, cfg_scale=2.0, rng=np.random.default_rng(42)
+        )
+        shared_rng = np.random.default_rng(42)
+        per_item = np.stack(
+            [
+                pipe.enhance(text, steps=2, noise_t=0.4, cfg_scale=2.0, rng=shared_rng)
+                for text in texts
+            ]
+        )
+        assert batch_vecs.shape == (3, 768)
+        assert np.allclose(batch_vecs, per_item, atol=1e-6)
+
+    def test_enhance_batch_larger_batch(self) -> None:
+        """批量大小验证: 更大批量仍返回 (N, 768) 且只编码一次。"""
+        encoder = _FakeEncoder()
+        pipe = ELFPipeline(device="cpu", encoder=encoder)
+        texts = [f"query number {i}" for i in range(8)]
+        vecs = pipe.enhance_batch(
+            texts, steps=2, noise_t=0.4, cfg_scale=1.0, rng=np.random.default_rng(42)
+        )
+        assert vecs.shape == (8, 768)
+        assert vecs.dtype == np.float32
+        assert encoder.encode_batch_calls == 1
+
+    def test_enhance_batch_model_fn_batched(self) -> None:
+        """性能验证: 批量模式下速度场每步只调用一次，且收到完整 batch。"""
+        cond_shapes: list[tuple[int, ...]] = []
+        uncond_shapes: list[tuple[int, ...]] = []
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            cond_shapes.append(z.shape)
+            return -z * 0.1
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            uncond_shapes.append(z.shape)
+            return -z * 0.1
+
+        pipe = ELFPipeline(
+            device="cpu",
+            encoder=_FakeEncoder(),
+            model_fn_cond=cond_fn,
+            model_fn_uncond=uncond_fn,
+        )
+        texts = [f"query number {i}" for i in range(5)]
+        pipe.enhance_batch(
+            texts, steps=3, noise_t=0.4, cfg_scale=2.0, rng=np.random.default_rng(42)
+        )
+        # 每步调用一次（共 steps 次），而非逐条串行的 steps × N 次
+        assert len(cond_shapes) == 3
+        assert len(uncond_shapes) == 3
+        assert all(shape == (5, 768) for shape in cond_shapes)
+        assert all(shape == (5, 768) for shape in uncond_shapes)
 
     # ── 默认构造函数 ───────────────────────
 
