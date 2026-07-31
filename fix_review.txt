@@ -64,884 +64,558 @@ variables:
 
 ## 审查报告
 
+  · codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session
+  · codegraph: installed — symbol-graph tools available next session
 [2m  ▎ thinking[0m
-Let me first gather context about the project structure, conventions, and related files before reviewing.
-  · 15809 tok · in 15509 (0 cached / 15509 new) · out 300 (98 reasoning) · ¥0.0483
+  · 12222 tok · in 11901 (6400 cached / 5501 new) · out 321 (163 reasoning) · ¥0.0186
+  -> read_file {"path": "src/elf/diffusion.py"}
+  -> read_file {"path": "src/elf/pipeline.py"}
+  -> read_file {"path": "src/elf/__init__.py"}
+  -> read_file {"path": "tests/test_elf_diffusion.py"}
+[2m  ▎ thinking[0m
+  · 27090 tok · in 26986 (12160 cached / 14826 new) · out 104 (19 reasoning) · ¥0.0454
   -> read_file {"path": ".reasonix/python-naming-conventions.instructions.md"}
-  -> glob {"pattern": "docs/**/*.md"}
-  -> glob {"pattern": "src/config.*"}
-  -> glob {"pattern": "src/utils/*.py"}
-  -> glob {"pattern": "src/evaluation/dataset.py"}
+  -> glob {"pattern": "docs/**/*"}
 [2m  ▎ thinking[0m
-  · 18025 tok · in 17826 (15744 cached / 2082 new) · out 199 (12 reasoning) · ¥0.0078
-  -> read_file {"path": "src/config.py"}
-  -> read_file {"path": "src/evaluation/dataset.py"}
-  -> read_file {"path": "src/utils/logger.py"}
-  -> read_file {"path": "src/utils/__init__.py"}
-  -> read_file {"path": "docs/diffusion-rag.md"}
+Let me verify whether `cfg_guide` and `denoise` (and `add_noise`) are still used outside of tests, and check related docs.
+  · 29170 tok · in 28946 (27008 cached / 1938 new) · out 224 (34 reasoning) · ¥0.0078
+  -> grep {"pattern": "cfg_guide", "path": "src"}
+  -> grep {"pattern": "from src\\.elf\\.diffusion import.*denoise[^_]", "path": "src"}
+  -> grep {"pattern": "from src\\.elf\\.diffusion import"}
 [2m  ▎ thinking[0m
-  · 22326 tok · in 22215 (17920 cached / 4295 new) · out 111 (28 reasoning) · ¥0.0140
-  -> glob {"pattern": "tests/*.py"}
-  -> read_file {"path": "docs/phase1-detailed-plan.md"}
+  · 30644 tok · in 30504 (29056 cached / 1448 new) · out 140 (19 reasoning) · ¥0.0059
+  -> grep {"path": "src/elf/model_wrapper.py", "pattern": "cfg_guide"}
+  -> grep {"path": "src/elf", "pattern": "\\bdenoise\\b"}
 [2m  ▎ thinking[0m
-  · 30086 tok · in 29974 (22272 cached / 7702 new) · out 112 (30 reasoning) · ¥0.0243
-  -> read_file {"path": "tests/test_utils.py"}
-  -> read_file {"path": "tests/conftest.py"}
+  · 31481 tok · in 31405 (30592 cached / 813 new) · out 76 (26 reasoning) · ¥0.0037
+  -> read_file {"path": "src/elf/model_wrapper.py"}
 [2m  ▎ thinking[0m
-  · 30792 tok · in 30719 (30080 cached / 639 new) · out 73 (23 reasoning) · ¥0.0031
-  -> read_file {"path": "docs/CODING_STYLE.md"}
+  · 33845 tok · in 33301 (31360 cached / 1941 new) · out 544 (475 reasoning) · ¥0.0099
+  -> grep {"path": "src/elf/pipeline.py", "pattern": "\\bsigma\\b"}
 [2m  ▎ thinking[0m
-Now let me verify one more detail about the download logic — the verification step:
-  · 38833 tok · in 34719 (30720 cached / 3999 new) · out 4114 (3966 reasoning) · ¥0.0374
-  -> read_file {"path": "src/utils/download.py", "offset": 305, "limit": 35}
-  -> grep {"pattern": "_TIMEOUT_SECONDS", "path": "src/utils/download.py"}
+  · 36626 tok · in 33935 (33792 cached / 143 new) · out 2691 (2623 reasoning) · ¥0.0174
+  -> grep {"path": "tests/test_elf_diffusion.py", "pattern": "_identity_model"}
+[2m  ▎ thinking[0m
+  · 37200 tok · in 36937 (36608 cached / 329 new) · out 263 (193 reasoning) · ¥0.0035
+  -> grep {"path": "src/elf/pipeline.py", "pattern": "\\bdenoise\\b"}
+[2m  ▎ thinking[0m
+  · 37469 tok · in 37345 (37120 cached / 225 new) · out 124 (44 reasoning) · ¥0.0023
+  -> bash {"command": "cd /home/runner/work/diffusion-rag/diffusion-rag && python -m pytest tests/test_elf_diffusion.py -v 2>&1 | ...
 [2m  ▎ thinking[0m
 ## 审查文件
-
-- `src/utils/download.py`
-- `tests/test_download.py`
-- `task_prompt.txt`
+- `src/elf/__init__.py`
+- `src/elf/diffusion.py`
+- `src/elf/pipeline.py`
+- `tests/test_elf_diffusion.py`
 
 ---
 
 ## 问题列表
 
-### [高] 死代码 / `_TIMEOUT_SECONDS` 定义但从未使用
-**文件**: `src/utils/download.py:43`
-**问题**: 常量 `_TIMEOUT_SECONDS = 60` 在模块顶部定义，但全文件没有任何地方引用它。`_wait_with_timeout()` 仅调用 `time.sleep(_RETRY_DELAY)`，与超时无关。
-**建议**: 删除该常量；或在 `_wait_with_timeout` / 下载函数中真正实现超时逻辑（如用 `signal.alarm` 或在线程中带超时等待）。目前注释中的 "超时 60s" 并未落地。
+### [中] 模块 docstring 过期 — pipeline.py 仍引用已移除的 `cfg_guide` / `denoise`
+**文件**: `src/elf/pipeline.py:3-4`、`:65-66`、`:133`
+**问题**: 模块和类 docstring 中多处以 `denoise` 和 `cfg_guide` 描述链路，但本次 diff 已将 `pipeline.py` 中的 `denoise` 和 `cfg_guide` 导入移除并替换为 `denoise_with_cfg`。docstring 与实际代码不一致：
+- 第 3 行: `整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise) 与`
+- 第 4 行: `CFG 引导 (cfg_guide) 的完整链路。`
+- 第 65-66 行: 同上（类的 docstring）
+- 第 133 行: `encode → add_noise → denoise → [CFG] → L2 normalize`
+**建议**: 更新为反映 velocity 级 CFG 的新链路描述，例如 `add_noise → denoise_with_cfg → L2 normalize`，并将 `cfg_guide` 替换为 `denoise_with_cfg`。
 
-### [高] 逻辑缺陷 / `_download_hf_dataset_with_retry` 首次下载不指定 config，可能漏下载 corpus
-**文件**: `src/utils/download.py:314-316`
-**问题**: 这里调用 `load_dataset(hf_name, ...)` 不传 `name` 参数（config name）。BEIR 数据集如 `BeIR/nfcorpus` 有 `corpus`、`queries` 等多个 config，`load_dataset` 在未指定时只加载默认 config（通常是 `corpus`，但也可能是不完整的子集）。对比 `src/evaluation/dataset.py:84` 的规范做法是显式传入 config name `_hf_load_with_retry("queries", hf_name, ...)`。
-**建议**: 参照 `dataset.py` 的模式，分别显式下载 `corpus` 和 `queries` config：
-```python
-load_dataset(hf_name, "corpus", cache_dir=str(data_dir), download_mode="reuse_dataset_if_exists")
-load_dataset(hf_name, "queries", cache_dir=str(data_dir), download_mode="reuse_dataset_if_exists")
-```
+---
 
-### [高] 逻辑缺陷 / `pbar.update(0)` 在 tqdm context manager 外部，纯属无效代码
-**文件**: `src/utils/download.py:327-328`
-**问题**: `pbar.update(0)` 在 `with tqdm(...) as pbar:` 块结束后调用，此时进度条已关闭，该调用是无效的 no-op。且 `pbar.update(0)` 语义本身就是不更新任何进度。
-**建议**: 删除该行。如需进度条覆盖验证阶段，应将验证 `load_dataset` 也放入 `with tqdm` 块内。
+### [中] 模块 docstring 过期 — diffusion.py 顶层描述不完整
+**文件**: `src/elf/diffusion.py:2-9`
+**问题**: 模块头部 docstring 仅列出 3 个函数 `add_noise`、`denoise`、`cfg_guide`，未包含新增的 `denoise_with_cfg`。第 9 行的链路示例 `encode(text) → add_noise → denoise → cfg_guide → L2 normalize` 也仍是旧的两阶段 CFG 方案。
+**建议**: 将 `denoise_with_cfg` 加入核心函数列表，并更新链路示例为 velocity 级 CFG 方案。
 
-### [中] 命名误导 / `_wait_with_timeout` 函数名与实际行为不符
-**文件**: `src/utils/download.py:175-177`
-**问题**: 函数名为 `_wait_with_timeout`，docstring 写 "等待重试间隔，同时计入总超时"，但实现仅一行 `time.sleep(_RETRY_DELAY)`，没有任何超时计数或超时判定逻辑。
-**建议**: 改名为 `_retry_sleep()` 或 `_wait_before_retry()`；同时修正 docstring。如果确需总超时控制，应实现对应逻辑。
+---
 
-### [中] 一致性 / `download_elf_weights` 缓存命中时返回路径不统一
-**文件**: `src/utils/download.py:107`
-**问题**: 缓存命中时，若 `models_dir / ELF_MODEL_REPO` 是目录则返回它，否则返回 `models_dir`。两种路径结构不一致（一个有子目录层级，一个没有），调用方如果拼接子路径可能出错。
-**建议**: 统一返回 `models_dir`（即只需告知"模型文件在哪个目录下"），或始终返回实际存在的目录路径并在 docstring 中明确说明返回值的结构。
+### [低] `denoise` vs `denoise_with_cfg` 中 Euler 推进写法不一致
+**文件**: `src/elf/diffusion.py:145` vs `:223`
+**问题**: `denoise` 中 ODE 推进使用 `z = z + v * dt`，而 `denoise_with_cfg` 使用 `z = np.asarray(z + v * dt, dtype=np.float32)`。`np.asarray` 包裹确保 float32 类型不变，属于防御性写法，但两个函数的推进逻辑写法不一致，可能让后续维护者困惑哪个是正确的。
+**建议**: 统一写法。推荐将 `denoise` 第 145 行也改为 `z = np.asarray(z + v * dt, dtype=np.float32)`，或至少在 `denoise_with_cfg` 处加注释说明原因。
 
-### [中] 一致性与维护性 / `SUPPORTED_DATASETS` 与 `src/evaluation/dataset.py` 的 `_DATASET_MAP` 重复
-**文件**: `src/utils/download.py:35-39` vs `src/evaluation/dataset.py:17-22`
-**问题**: 两份代码各自维护一份完全相同的 BEIR 数据集映射字典。新增数据集时需要同步修改两处，容易遗漏。
-**建议**: 将 `_DATASET_MAP` 提升为 `src/config.py` 中的公共常量（如 `BEIR_DATASET_MAP`），两处 `import` 同一来源。
+---
 
-### [中] 测试覆盖 / 缺少 ELF 权重下载全部重试耗尽 + fallback 也失败的测试
-**文件**: `tests/test_download.py`
-**问题**: `TestDownloadElfWeights` 测试了正常下载和回退到 checkpoint，但没有测试以下场景：
-- `snapshot_download` 失败 3 次 + `hf_hub_download` 也失败 3 次 → 应抛出 `RuntimeError`
-**建议**: 新增 `test_download_all_retries_exhausted`，patch 两者均 `side_effect=RuntimeError`，断言 `RuntimeError` 被抛出且重试次数符合预期。
+### [低] 死代码 — `TestDenoiseWithCFG._identity_model` 未被使用
+**文件**: `tests/test_elf_diffusion.py:380-383`
+**问题**: `TestDenoiseWithCFG` 中定义了 `_identity_model` 静态方法，但该类全部 13 个测试均未引用它（均使用 `_zero_model` 或内联闭包）。而 `TestDenoise` 中同名方法是被 `test_identity_model_euler_exact` 等测试使用的。
+**建议**: 移除 `TestDenoiseWithCFG._identity_model`，或新增一个使用它的测试以覆盖恒等速度场场景（例如验证 `denoise_with_cfg` + identity model 的数值正确性）。
 
-### [低] 测试不够精确 / `test_download_all_retries_exhausted` 断言过于宽松
-**文件**: `tests/test_download.py:237`
-**问题**: `assert mock_load.call_count >= 3` 使用 `>=`，而实际重试就是 `_MAX_RETRIES = 3` 次。如果用 `==` 更能捕捉异常路径（如重试 4 次说明循环条件有 bug）。
-**建议**: 改为 `assert mock_load.call_count == 3`，并在 docstring 中说明预期行为。
+---
 
-### [低] 测试中 mock 验证请求缺失 / 未验证 `download_dataset` 的 qrels 下载参数
-**文件**: `tests/test_download.py:174-175`
-**问题**: `test_download_success` 仅模糊断言 `any("BeIR/nfcorpus-qrels" in str(c) for c in calls)`，未验证 qrels 下载时是否传了正确的 `cache_dir` 和 `download_mode` 参数。
-**建议**: 使用 `mock_load.assert_any_call` 或检查 `call_args_list` 中对应调用的关键字参数。
-
-### [低] 风格 / 模块 docstring 提及 "三路加载策略（HuggingFace / 本地缓存）"
-**文件**: `src/utils/download.py:3-4`
-**问题**: docstring 和 `task_prompt.txt` 提到 "三路加载策略（HuggingFace / Google Drive / 本地缓存）"，但实现中只有两路（HuggingFace + 本地缓存），Google Drive 路径并未实现。docstring 已修正为两路，但代码内注释 "实现三路加载策略" 与实际不符。
-**建议**: 移除 docstring 中 "三路" 字样，或补充 Google Drive 下载路径的实现。
+### [低] `model_wrapper.py` 中 `create_model_pair` docstring 过时（非本次 diff 范围）
+**文件**: `src/elf/model_wrapper.py:154-158`
+**问题**: `create_model_pair` 的 docstring 示例仍使用旧的 `denoise` + `cfg_guide` 两步法，与新的 `denoise_with_cfg` 一体式调用不一致。虽然该文件不在本次 diff 范围内，但新函数 `denoise_with_cfg` 使得该 docstring 已不反映推荐用法。
+**建议**: 更新示例为 velocity 级 CFG 的新 API。
 
 ---
 
 ## 总结
+- **高风险问题**: 0
+- **中风险问题**: 2（pipeline.py 和 diffusion.py 的 docstring 过期，影响可读性和 API 一致性）
+- **低风险问题**: 3（Euler 推进写法不一致、死代码 `_identity_model`、`model_wrapper.py` docstring 过时）
 
-- **高风险问题**: 3（死常量 `_TIMEOUT_SECONDS`、config 缺失导致可能漏下载 corpus、`pbar.update(0)` 无效代码）
-- **中风险问题**: 4（函数命名误导、返回路径不统一、数据集映射重复、测试覆盖缺失）
-- **低风险问题**: 3（测试断言宽松、mock 验证不完整、docstring 与实际不一致）
-
-**整体评价**: 代码结构清晰，模块拆分合理，日志与错误处理规范，mock 测试策略正确。主要问题集中在下载函数中对 `datasets.load_dataset` API 的使用不够严谨（与同仓库 `dataset.py` 已有模式不一致）、一个未使用的死常量、以及一个在 context manager 外的无效调用。建议在上述高/中风险项修复后合入。
-  · 40968 tok · in 39233 (38784 cached / 449 new) · out 1735 (36 reasoning) · ¥0.0127
+### 附加说明
+- 所有 54 个测试通过，新增 `TestDenoiseWithCFG` 覆盖了 shape/dtype 基本验证、`cfg_scale=1.0` 等价性、velocity 混合公式验证、调用次数、错误处理、默认参数、多步等场景，覆盖充分。
+- `denoise_with_cfg` 的公共 API 设计合理：签名与 `denoise` 对齐（`steps`、`t_start`、`t_end`），且 `cfg_scale=1.0` 时优化跳过 uncond_fn 调用，与验收标准一致。
+- 命名符合仓库 `snake_case` 规范，类型注解和 docstring 完整。
+  · 39795 tok · in 38529 (37376 cached / 1153 new) · out 1266 (63 reasoning) · ¥0.0120
 
 
 ## 代码变更 Diff
 
-diff --git a/src/utils/download.py b/src/utils/download.py
-new file mode 100644
-index 0000000..399a582
---- /dev/null
-+++ b/src/utils/download.py
-@@ -0,0 +1,410 @@
-+#!/usr/bin/env python3
-+"""资产下载脚本与缓存管理。
-+
-+支持从 HuggingFace Hub 下载 ELF-B 模型权重和 BEIR 评测数据集，
-+实现三路加载策略（HuggingFace / 本地缓存），
-+并支持命令行调用。
-+
-+Usage:
-+    python -m src.utils.download --all
-+    python -m src.utils.download --elf-weights
-+    python -m src.utils.download --dataset nfcorpus
-+    python -m src.utils.download --cache-dir /path/to/cache
-+"""
-+
-+from __future__ import annotations
-+
-+import argparse
-+import os
-+import time
-+from pathlib import Path
-+
-+from tqdm.auto import tqdm
-+
-+from src.config import DATA_DIR, MODELS_DIR
-+from src.utils.logger import get_logger
-+
-+logger = get_logger(__name__)
-+
-+# ── 常量 ───────────────────────────────────────
-+
-+ELF_MODEL_REPO = "embedded-language-flows/ELF-B-owt-torch"
-+
-+# 支持的数据集映射（与 src/evaluation/dataset.py 一致）
-+SUPPORTED_DATASETS: dict[str, str] = {
-+    "nfcorpus": "BeIR/nfcorpus",
-+    "msmarco": "BeIR/msmarco",
-+    "nq": "BeIR/nq",
-+    "fiqa": "BeIR/fiqa",
-+}
-+
-+# 重试配置
-+_MAX_RETRIES = 3
-+_TIMEOUT_SECONDS = 60
-+_RETRY_DELAY = 5.0  # 秒
-+
-+
-+# ──────────────────────────────────────────────
-+#  下载函数
+diff --git a/src/elf/__init__.py b/src/elf/__init__.py
+index fad7611..a642421 100644
+--- a/src/elf/__init__.py
++++ b/src/elf/__init__.py
+@@ -3,7 +3,7 @@
+ 提供 ELF 原生模型编码、扩散正反向、CFG 引导及完整增强链路。
+ """
+ 
+-from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
++from src.elf.diffusion import add_noise, cfg_guide, denoise, denoise_with_cfg, sigma
+ from src.elf.encoder import ELFEncoder
+ from src.elf.model_wrapper import ELFModelWrapper, create_model_pair
+ from src.elf.native_encoder import ELFNativeEncoder
+@@ -14,6 +14,7 @@ __all__ = [
+     "cfg_guide",
+     "create_model_pair",
+     "denoise",
++    "denoise_with_cfg",
+     "ELFEncoder",
+     "ELFModelWrapper",
+     "ELFNativeEncoder",
+diff --git a/src/elf/diffusion.py b/src/elf/diffusion.py
+index dc3bccb..d9f69d2 100644
+--- a/src/elf/diffusion.py
++++ b/src/elf/diffusion.py
+@@ -149,7 +149,91 @@ def denoise(
+ 
+ 
+ # ──────────────────────────────────────────────
+-#  CFG 引导
++#  Velocity 级 CFG 去噪
 +# ──────────────────────────────────────────────
 +
 +
-+def _resolve_cache_dir(cache_dir: str | None) -> tuple[Path, Path]:
-+    """根据用户参数解析模型和数据缓存目录。
++def denoise_with_cfg(
++    z_t: NDArray[np.float32],
++    cond_fn: Callable[[NDArray[np.float32], float], NDArray[np.float32]],
++    uncond_fn: Callable[[NDArray[np.float32], float], NDArray[np.float32]],
++    steps: int = 2,
++    cfg_scale: float = 2.0,
++    t_start: float | None = None,
++    t_end: float = 0.0,
++) -> NDArray[np.float32]:
++    """Velocity 级 CFG 去噪: 每步混合速度场后推进 ODE。
++
++    在每个去噪步骤中同时调用 cond_fn 和 uncond_fn 预测速度场，
++    按 CFG 公式混合后再推进:
++        v_cond = cond_fn(z, t)
++        v_uncond = uncond_fn(z, t)
++        v_cfg = v_uncond + cfg_scale · (v_cond - v_uncond)
++        z ← z + v_cfg · Δt
++
++    等价形式: v_cfg = cfg_scale · v_cond + (1 - cfg_scale) · v_uncond
++
++    cfg_scale=1.0 时只调用 cond_fn，与普通 denoise 等价。
 +
 +    Args:
-+        cache_dir: 用户指定的缓存根目录，None 则使用默认值。
++        z_t: 加噪向量。shape (d,) 或 (n, d)。
++        cond_fn: 条件速度场函数，签名 cond_fn(z, t) → v。
++        uncond_fn: 无条件速度场函数，签名 uncond_fn(z, t) → v。
++        steps: 去噪步数（ODE 步数）。
++        cfg_scale: CFG 引导强度。1.0 时仅去噪（只调 cond_fn）。
++        t_start: 起始时间。默认与 z_t 对应噪声水平匹配。
++        t_end: 终止时间，通常为 0.0。
 +
 +    Returns:
-+        (models_dir, data_dir): 模型和数据缓存目录的 Path 对象。
-+    """
-+    if cache_dir is not None:
-+        root = Path(cache_dir)
-+        return root / "models", root / "data"
-+    return Path(MODELS_DIR), Path(DATA_DIR)
-+
-+
-+def _check_elf_cached(models_dir: Path) -> bool:
-+    """检查 ELF-B 模型权重是否已缓存到本地。
-+
-+    Args:
-+        models_dir: 模型缓存目录。
-+
-+    Returns:
-+        是否已缓存。
-+    """
-+    # 检查 snapshot 目录或单个 checkpoint 文件
-+    elf_dir = models_dir / ELF_MODEL_REPO
-+    if elf_dir.is_dir() and any(elf_dir.iterdir()):
-+        return True
-+    checkpoint_file = models_dir / "checkpoint_95085"
-+    return checkpoint_file.is_file()
-+
-+
-+def download_elf_weights(cache_dir: str | None = None) -> Path:
-+    """从 HuggingFace Hub 下载 ELF-B 模型权重。
-+
-+    检查本地缓存，已存在则跳过。
-+    若完整仓库下载失败，回退到仅下载 checkpoint 文件。
-+
-+    Args:
-+        cache_dir: 缓存根目录，None 使用 ``models/``。
-+
-+    Returns:
-+        模型文件所在的目录路径。
++        去噪后的向量，shape 与 z_t 相同。
 +
 +    Raises:
-+        RuntimeError: 所有下载尝试均失败时抛出。
++        ValueError: steps <= 0。
++        ValueError: z_t 不是 float32。
++
++    Examples:
++        >>> z_t = np.random.randn(768).astype(np.float32)
++        >>> identity = lambda z, t: z
++        >>> z_0 = denoise_with_cfg(z_t, identity, identity, steps=2, cfg_scale=2.0, t_start=0.4)
++        >>> z_0.shape
++        (768,)
 +    """
-+    models_dir, _ = _resolve_cache_dir(cache_dir)
-+    models_dir.mkdir(parents=True, exist_ok=True)
++    if steps <= 0:
++        raise ValueError(f"steps 必须为正整数，got {steps}")
++    if z_t.dtype != np.float32:
++        raise ValueError(f"z_t 必须是 float32，got {z_t.dtype}")
 +
-+    if _check_elf_cached(models_dir):
-+        logger.info("ELF-B 权重已缓存，跳过下载")
-+        return models_dir / ELF_MODEL_REPO if (models_dir / ELF_MODEL_REPO).is_dir() else models_dir
++    if t_start is None:
++        t_start = DEFAULT_NOISE_T
 +
-+    logger.info("下载 ELF-B 模型权重 %s", ELF_MODEL_REPO)
++    is_1d = z_t.ndim == 1
++    z = np.atleast_2d(z_t).copy()
 +
-+    # 尝试完整仓库下载
-+    for attempt in range(1, _MAX_RETRIES + 1):
-+        try:
-+            from huggingface_hub import snapshot_download
++    dt = (t_end - t_start) / steps
++    use_cfg = abs(cfg_scale - 1.0) > 1e-6
 +
-+            local_dir = models_dir / ELF_MODEL_REPO
-+            with tqdm(desc="下载 ELF-B 权重", unit="B", unit_scale=True) as pbar:
-+                snapshot_download(
-+                    repo_id=ELF_MODEL_REPO,
-+                    local_dir=str(local_dir),
-+                    local_dir_use_symlinks=False,
-+                    resume_download=True,
-+                    tqdm_class=type(pbar),
-+                )
-+            logger.info("ELF-B 权重下载完成: %s", local_dir)
-+            return local_dir
-+        except Exception as e:
-+            logger.warning(
-+                "ELF-B 完整仓库下载失败 (尝试 %d/%d): %s",
-+                attempt,
-+                _MAX_RETRIES,
-+                e,
-+            )
-+            if attempt < _MAX_RETRIES:
-+                _wait_with_timeout()
++    for i in range(steps):
++        t_curr = t_start + i * dt
++        if use_cfg:
++            v_cond = cond_fn(z, t_curr)
++            v_uncond = uncond_fn(z, t_curr)
++            v = v_uncond + cfg_scale * (v_cond - v_uncond)
++        else:
++            v = cond_fn(z, t_curr)
++        z = np.asarray(z + v * dt, dtype=np.float32)
 +
-+    # 回退：仅下载 checkpoint 文件
-+    logger.warning("完整仓库下载失败，回退到仅下载 checkpoint 文件")
-+    return _download_elf_checkpoint_fallback(models_dir)
-+
-+
-+def _download_elf_checkpoint_fallback(models_dir: Path) -> Path:
-+    """回退方案：仅下载 ELF checkpoint 文件。
-+
-+    Args:
-+        models_dir: 模型缓存目录。
-+
-+    Returns:
-+        模型文件所在目录路径。
-+
-+    Raises:
-+        RuntimeError: 下载仍失败时抛出。
-+    """
-+    from huggingface_hub import hf_hub_download
-+
-+    for attempt in range(1, _MAX_RETRIES + 1):
-+        try:
-+            checkpoint_path = hf_hub_download(
-+                repo_id=ELF_MODEL_REPO,
-+                filename="checkpoint_95085",
-+                local_dir=str(models_dir),
-+                resume_download=True,
-+            )
-+            logger.info("ELF checkpoint 下载完成: %s", checkpoint_path)
-+            return Path(checkpoint_path).parent
-+        except Exception as e:
-+            logger.warning(
-+                "ELF checkpoint 下载失败 (尝试 %d/%d): %s",
-+                attempt,
-+                _MAX_RETRIES,
-+                e,
-+            )
-+            if attempt < _MAX_RETRIES:
-+                _wait_with_timeout()
-+
-+    raise RuntimeError(
-+        f"ELF-B 模型下载失败，已重试 {_MAX_RETRIES} 次。"
-+        f"请检查网络连接或手动下载: https://huggingface.co/{ELF_MODEL_REPO}"
++    logger.debug(
++        "denoise_with_cfg: steps=%d, t_start=%.2f, cfg_scale=%.1f, shape=%s",
++        steps,
++        t_start,
++        cfg_scale,
++        z_t.shape,
 +    )
++    return z.reshape(-1) if is_1d else z
 +
 +
-+def _wait_with_timeout() -> None:
-+    """等待重试间隔，同时计入总超时。"""
-+    time.sleep(_RETRY_DELAY)
-+
-+
-+def _check_dataset_cached(name: str, data_dir: Path) -> bool:
-+    """检查数据集是否已缓存。
-+
-+    Args:
-+        name: 数据集名称（如 'nfcorpus'）。
-+        data_dir: 数据缓存目录。
-+
-+    Returns:
-+        是否已缓存。
-+    """
-+    # HuggingFace datasets 缓存路径为 ~/.cache/huggingface/datasets
-+    # 我们不做深度扫描，依赖 datasets 库自身的缓存机制
-+    hf_name = SUPPORTED_DATASETS.get(name, name)
-+    # 简单检查 data_dir 下是否有标记文件
-+    marker = data_dir / f".{name}_downloaded"
-+    if marker.is_file():
-+        return True
-+
-+    # 检查 HuggingFace 默认缓存
-+    hf_cache = Path(
-+        os.environ.get(
-+            "HF_DATASETS_CACHE", str(Path.home() / ".cache" / "huggingface" / "datasets")
++# ──────────────────────────────────────────────
++#  CFG 引导（后处理 / Z 空间混合）
+ # ──────────────────────────────────────────────
+ 
+ 
+diff --git a/src/elf/pipeline.py b/src/elf/pipeline.py
+index 7ce8718..5ed9a55 100644
+--- a/src/elf/pipeline.py
++++ b/src/elf/pipeline.py
+@@ -18,7 +18,7 @@ from collections.abc import Callable
+ import numpy as np
+ from numpy.typing import NDArray
+ 
+-from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, cfg_guide, denoise, sigma
++from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, denoise_with_cfg, sigma
+ from src.elf.encoder import ELFEncoder
+ from src.elf.native_encoder import ELFNativeEncoder
+ from src.utils.device import get_device
+@@ -148,19 +148,19 @@ class ELFPipeline:
+         # Step 2: 加噪
+         z_t = add_noise(z_0, t=noise_t, rng=rng)
+ 
+-        # Step 3: 条件去噪
++        # Step 3: Velocity 级 CFG 去噪（每步混合速度场）
+         cond_fn = self._model_fn_cond or _default_model_fn
+-        z_cond = denoise(z_t, cond_fn, steps=steps, t_start=noise_t)
+-
+-        # Step 4: CFG 引导（scale 不为 1.0 时）
+-        if abs(cfg_scale - 1.0) > 1e-6:
+-            uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
+-            z_uncond = denoise(z_t, uncond_fn, steps=steps, t_start=noise_t)
+-            z_out = cfg_guide(z_cond, z_uncond, scale=cfg_scale)
+-        else:
+-            z_out = z_cond
++        uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
++        z_out = denoise_with_cfg(
++            z_t,
++            cond_fn=cond_fn,
++            uncond_fn=uncond_fn,
++            steps=steps,
++            cfg_scale=cfg_scale,
++            t_start=noise_t,
 +        )
-+    )
-+    # 以 BeIR/nfcorpus 为例，缓存路径包含 repo 名称
-+    if (hf_cache / hf_name.replace("/", "_")).is_dir():
-+        return True
-+    # 也检查带下划线的变体
-+    if (hf_cache / hf_name.replace("/", "--")).is_dir():
-+        return True
-+
-+    return False
-+
-+
-+def _mark_dataset_downloaded(name: str, data_dir: Path) -> None:
-+    """标记数据集已下载完成。"""
-+    data_dir.mkdir(parents=True, exist_ok=True)
-+    marker = data_dir / f".{name}_downloaded"
-+    marker.touch()
-+
-+
-+def download_dataset(name: str, cache_dir: str | None = None) -> None:
-+    """下载指定的 BEIR 评测数据集。
-+
-+    Args:
-+        name: 数据集名称，支持 'nfcorpus', 'msmarco', 'nq', 'fiqa'。
-+        cache_dir: 缓存根目录，None 使用默认。
-+
-+    Raises:
-+        ValueError: 不支持的数据集名称。
-+        RuntimeError: 下载失败（含网络错误）。
-+    """
-+    _, data_dir = _resolve_cache_dir(cache_dir)
-+
-+    if name not in SUPPORTED_DATASETS:
-+        supported = ", ".join(SUPPORTED_DATASETS.keys())
-+        raise ValueError(f"不支持的数据集 '{name}'，支持: {supported}")
-+
-+    hf_name = SUPPORTED_DATASETS[name]
-+
-+    if _check_dataset_cached(name, data_dir):
-+        logger.info("数据集 %s 已缓存，跳过下载", name)
-+        return
-+
-+    logger.info("下载数据集 %s (HuggingFace: %s)", name, hf_name)
-+
-+    _download_hf_dataset_with_retry(hf_name, name, data_dir)
-+
-+    _mark_dataset_downloaded(name, data_dir)
-+    logger.info("数据集 %s 下载完成", name)
-+
-+
-+def _download_hf_dataset_with_retry(
-+    hf_name: str,
-+    name: str,
-+    data_dir: Path,
-+) -> None:
-+    """带重试和进度条的 HuggingFace 数据集下载。
-+
-+    Args:
-+        hf_name: HuggingFace 数据集标识符（如 'BeIR/nfcorpus'）。
-+        name: 数据集名称（用于日志）。
-+        data_dir: 数据缓存目录。
-+
-+    Raises:
-+        RuntimeError: 所有重试均失败时抛出。
-+    """
-+    from datasets import load_dataset
-+
-+    last_error: Exception | None = None
-+    for attempt in range(1, _MAX_RETRIES + 1):
-+        try:
-+            with tqdm(desc=f"下载 {name}", unit="B", unit_scale=True) as pbar:
-+                # 先下载并缓存数据集（不加载到内存）
-+                load_dataset(
-+                    hf_name,
-+                    cache_dir=str(data_dir),
-+                    download_mode="reuse_dataset_if_exists",
-+                )
-+                # 也下载 qrels
-+                load_dataset(
-+                    hf_name + "-qrels",
-+                    cache_dir=str(data_dir),
-+                    download_mode="reuse_dataset_if_exists",
-+                )
-+            # 快速验证：尝试加载一个子集
-+            ds = load_dataset(hf_name, "queries", cache_dir=str(data_dir), split="queries")
-+            pbar.update(0)  # 让进度条显示完成
-+            logger.info("数据集 %s 验证通过 (%d 条 queries)", name, len(ds))
-+            return
-+        except Exception as e:
-+            last_error = e
-+            logger.warning(
-+                "数据集 %s 下载失败 (尝试 %d/%d): %s",
-+                name,
-+                attempt,
-+                _MAX_RETRIES,
-+                e,
-+            )
-+            if attempt < _MAX_RETRIES:
-+                _wait_with_timeout()
-+
-+    raise RuntimeError(
-+        f"数据集 {name} ({hf_name}) 下载失败，已重试 {_MAX_RETRIES} 次: {last_error}"
-+    )
-+
-+
-+def download_all(cache_dir: str | None = None) -> None:
-+    """下载全部资产（ELF-B 权重 + 所有 BEIR 数据集）。
-+
-+    Args:
-+        cache_dir: 缓存根目录，None 使用默认。
-+    """
-+    logger.info("=== 开始下载全部资产 ===")
-+
-+    logger.info("[1/2] 下载 ELF-B 模型权重...")
-+    download_elf_weights(cache_dir=cache_dir)
-+
-+    logger.info("[2/2] 下载 BEIR 评测数据集...")
-+    for dataset_name in SUPPORTED_DATASETS:
-+        try:
-+            download_dataset(dataset_name, cache_dir=cache_dir)
-+        except (ValueError, RuntimeError) as e:
-+            logger.error("数据集 %s 下载失败: %s", dataset_name, e)
-+
-+    logger.info("=== 全部资产下载完成 ===")
-+
-+
-+# ──────────────────────────────────────────────
-+#  CLI 入口
-+# ──────────────────────────────────────────────
-+
-+
-+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-+    """解析命令行参数。
-+
-+    Args:
-+        argv: 命令行参数列表，None 使用 sys.argv。
-+
-+    Returns:
-+        解析后的命名空间。
-+    """
-+    parser = argparse.ArgumentParser(
-+        description="Diffusion RAG — 资产下载脚本",
-+        formatter_class=argparse.RawDescriptionHelpFormatter,
-+        epilog=(
-+            "示例:\n"
-+            "  %(prog)s --all                          下载全部资产\n"
-+            "  %(prog)s --elf-weights                  仅下载 ELF-B 模型权重\n"
-+            "  %(prog)s --dataset nfcorpus             仅下载 NFCorpus 数据集\n"
-+            "  %(prog)s --dataset nfcorpus --cache-dir /mnt/cache  指定缓存目录\n"
-+        ),
-+    )
-+
-+    # 互斥操作
-+    action = parser.add_mutually_exclusive_group()
-+    action.add_argument(
-+        "--all",
-+        action="store_true",
-+        help="下载全部资产（ELF-B 权重 + 所有 BEIR 数据集）",
-+    )
-+    action.add_argument(
-+        "--elf-weights",
-+        action="store_true",
-+        help="仅下载 ELF-B 模型权重",
-+    )
-+    action.add_argument(
-+        "--dataset",
-+        type=str,
-+        choices=list(SUPPORTED_DATASETS.keys()),
-+        help="仅下载指定数据集",
-+    )
-+
-+    parser.add_argument(
-+        "--cache-dir",
-+        type=str,
-+        default=None,
-+        help="缓存根目录（默认: models/ + data/）",
-+    )
-+
-+    args = parser.parse_args(argv)
-+
-+    # 未指定任何操作时，默认下载全部
-+    if not args.all and not args.elf_weights and not args.dataset:
-+        args.all = True
-+
-+    return args
-+
-+
-+def main(argv: list[str] | None = None) -> None:
-+    """下载脚本入口。
-+
-+    Args:
-+        argv: 命令行参数列表，None 使用 sys.argv。
-+    """
-+    args = _parse_args(argv)
-+
-+    if args.all:
-+        download_all(cache_dir=args.cache_dir)
-+    elif args.elf_weights:
-+        download_elf_weights(cache_dir=args.cache_dir)
-+    elif args.dataset:
-+        download_dataset(args.dataset, cache_dir=args.cache_dir)
-+
-+
-+if __name__ == "__main__":
-+    main()
+ 
+-        # Step 5: L2 归一化
++        # Step 4: L2 归一化
+         norm = float(np.linalg.norm(z_out))
+         if norm > 1e-8:
+             z_out = z_out / norm
 diff --git a/task_prompt.txt b/task_prompt.txt
-index 4b0be05..0d05678 100644
+index 0d05678..8b57afd 100644
 --- a/task_prompt.txt
 +++ b/task_prompt.txt
-@@ -1,50 +1,42 @@
+@@ -1,42 +1,58 @@
  # 开发任务
  
  ## Issue 描述
--标题: 接入 ELF 原生模型：替换 BGE 占位实现
-+标题: 创建资产下载脚本与缓存管理 src/utils/download.py
+-标题: 创建资产下载脚本与缓存管理 src/utils/download.py
++标题: CFG 引导改为 velocity 级混合（去噪循环内部）
  需求:
  ## 问题描述
  
--当前 （）底层使用  + ，与  完全相同。ELF 特有的扩散增强链路仅在一个 BGE 向量上做噪声操作，缺乏 ELF 原生模型的流匹配（flow matching）速度场。
-+文档附录 B 的快速启动命令包含 ，且文档 §1.5 明确列出了  的需求。当前该文件不存在，无法自动下载 ELF 权重和评测数据。
- 
--### 文档要求
-+## 具体任务
- 
--> "基于官方  实现 encode()/denoise()/cfg_guide()"
-+### 1. 创建 
-+实现三路加载策略（HuggingFace / Google Drive / 本地缓存）：
+-文档附录 B 的快速启动命令包含 ，且文档 §1.5 明确列出了  的需求。当前该文件不存在，无法自动下载 ELF 权重和评测数据。
++### 当前实现（post-hoc 向量级混合）
++ 中分别跑完整 cond/uncond denoise，然后混合最终向量：
  
 -## 具体任务
  
--### 1. 创建  — ELFNativeEncoder
--- 从 HuggingFace Hub 加载 ELF-B 权重（ 或类似名称）
--- 调用 ELF 原生  输出 768-dim L2 归一化向量
--- 接口与  一致（）
--- 支持  自动检测
+-### 1. 创建 
+-实现三路加载策略（HuggingFace / Google Drive / 本地缓存）：
++### 文档要求（velocity 级混合）
++文档公式明确写的是速度场级的 CFG：
++> 
++
++这意味着在每个去噪步内同时调用 cond 和 uncond model_fn，混合速度场后再推进 ODE。
++
++### 区别
++- 当前方案：**Z 空间混合** — 
++- 文档方案：**V 空间混合** — ，每一步推进 
  
--### 2. 创建  — ELFModelWrapper
--- 包装 ELF 模型的  为速度场函数
--- 签名：
--- 支持条件/无条件两种模式（用于 CFG）
--- 与  /  /  的接口兼容
-+### 2. 支持命令行调用
-+-  — 下载全部资产
-+-  — 仅下载 ELF-B 权重
-+-  — 仅下载指定数据集
-+-  — 指定缓存目录
++两者不等价。V 空间混合是扩散模型 CFG 的标准实现方式（每一步都在修正生成路径）。
++
++## 具体任务
  
--### 3. 更新 
--- 默认使用  代替 
--- 支持  在 ELF 原生 vs 简易基准间切换
-+### 3. 主要功能
-+- 从 HuggingFace Hub 下载 ELF-B 模型权重（或自动回退到小版本）
-+- 从 HuggingFace datasets 下载 BEIR 评测数据
-+- 自动重试（最多 3 次）+ 超时 60s
-+- 检查本地缓存避免重复下载
-+- 进度条显示（使用 tqdm）
++### 1. 修改  — 
++- 在  循环层面实现 velocity 级 CFG
++- 每个 denoise 步骤同时调用 cond 和 uncond model_fn
++- 混合速度场：
++- ODE 推进：
++- 保持  时与仅去噪等价（只调用 cond_fn）
  
- ### 4. 单元测试
---  — mock ELF 模型，测试接口一致性
---  — 验证速度场输出 shape/dtype
-+-  — mock huggingface_hub，验证下载逻辑
+-### 2. 支持命令行调用
+--  — 下载全部资产
+--  — 仅下载 ELF-B 权重
+--  — 仅下载指定数据集
+--  — 指定缓存目录
++### 2. 修改或新增去噪函数
++- 在  中新增  函数，封装上述逻辑
++- 或扩展  支持  和  参数
+ 
+-### 3. 主要功能
+-- 从 HuggingFace Hub 下载 ELF-B 模型权重（或自动回退到小版本）
+-- 从 HuggingFace datasets 下载 BEIR 评测数据
+-- 自动重试（最多 3 次）+ 超时 60s
+-- 检查本地缓存避免重复下载
+-- 进度条显示（使用 tqdm）
++### 3. 更新 
++- 导出新增函数
+ 
+-### 4. 单元测试
+--  — mock huggingface_hub，验证下载逻辑
++### 4. 更新测试
++-  — 增加  的单元测试
++-  — 验证 velocity 级 CFG 的调用次数和输出 shape
  
  ## 验收标准
  
--- [ ]  且 dtype==float32
--- [ ]  输出 shape 与 z 一致、dtype==float32
--- [ ]  正常工作
--- [ ] 所有现有 87 个测试仍通过
--- [ ] black . --line-length 100 --check
--isort . --check-only
--Skipped 1 files
--mypy src/ --strict
--Success: no issues found in 19 source files
--All static checks passed. 通过
-+- [ ]  显示帮助信息
-+- [ ]  下载 NFCorpus 数据集
-+- [ ] 已有缓存时跳过下载
-+- [ ] 下载失败后自动重试 3 次
-+- [ ] 所有现有测试通过
+-- [ ]  显示帮助信息
+-- [ ]  下载 NFCorpus 数据集
+-- [ ] 已有缓存时跳过下载
+-- [ ] 下载失败后自动重试 3 次
++- [ ]  在每个步内同时调用 cond_fn 和 uncond_fn
++- [ ]  时只调用 cond_fn（与  等价）
++- [ ]  时混合速度场后再推进
+ - [ ] 所有现有测试通过
++- [ ] black . --line-length 100 --check
++isort . --check-only
++Skipped 1 files
++mypy src/ --strict
++Success: no issues found in 22 source files
++All static checks passed. 通过
  
  ## 项目开发规范
  请严格遵循以下仓库定义的标准来完成任务。
-diff --git a/tests/test_download.py b/tests/test_download.py
-new file mode 100644
-index 0000000..5bf2413
---- /dev/null
-+++ b/tests/test_download.py
-@@ -0,0 +1,271 @@
-+"""下载模块单元测试。
-+
-+使用 mock 避免实际网络请求。
-+"""
-+
-+from __future__ import annotations
-+
-+from pathlib import Path
-+from unittest.mock import MagicMock, patch
-+
-+import pytest
-+
-+from src.utils.download import (
-+    SUPPORTED_DATASETS,
-+    _check_dataset_cached,
-+    _check_elf_cached,
-+    _resolve_cache_dir,
-+    download_all,
-+    download_dataset,
-+    download_elf_weights,
-+    main,
-+)
+diff --git a/tests/test_elf_diffusion.py b/tests/test_elf_diffusion.py
+index 108d1d1..e1c9e94 100644
+--- a/tests/test_elf_diffusion.py
++++ b/tests/test_elf_diffusion.py
+@@ -6,7 +6,7 @@
+ import numpy as np
+ import pytest
+ 
+-from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
++from src.elf.diffusion import add_noise, cfg_guide, denoise, denoise_with_cfg, sigma
+ 
+ # ──────────────────────────────────────────────
+ #  sigma 调度
+@@ -362,3 +362,193 @@ class TestCFGGuide:
+         z_cfg = cfg_guide(z_cond, z_uncond, scale=2.0)
+         assert z_cfg.shape == (768,)
+         assert z_cfg.dtype == np.float32
 +
 +
-+class TestResolveCacheDir:
-+    """_resolve_cache_dir 单元测试。"""
-+
-+    def test_default_cache_dir(self) -> None:
-+        models_dir, data_dir = _resolve_cache_dir(None)
-+        assert models_dir == Path("models")
-+        assert data_dir == Path("data")
-+
-+    def test_custom_cache_dir(self) -> None:
-+        models_dir, data_dir = _resolve_cache_dir("/my/cache")
-+        assert models_dir == Path("/my/cache/models")
-+        assert data_dir == Path("/my/cache/data")
-+
-+    def test_relative_custom_cache_dir(self) -> None:
-+        models_dir, data_dir = _resolve_cache_dir("my_cache")
-+        assert models_dir == Path("my_cache/models")
-+        assert data_dir == Path("my_cache/data")
++# ──────────────────────────────────────────────
++#  denoise_with_cfg (velocity 级 CFG)
++# ──────────────────────────────────────────────
 +
 +
-+class TestCheckElfCached:
-+    """_check_elf_cached 单元测试。"""
++class TestDenoiseWithCFG:
++    """Velocity 级 CFG 去噪测试。"""
 +
-+    def test_cached_when_dir_exists_and_nonempty(self, tmp_path: Path) -> None:
-+        elf_dir = tmp_path / "embedded-language-flows" / "ELF-B-owt-torch"
-+        elf_dir.mkdir(parents=True)
-+        (elf_dir / "checkpoint_95085").touch()
-+        assert _check_elf_cached(tmp_path) is True
++    @staticmethod
++    def _zero_model(z: np.ndarray, _t: float) -> np.ndarray:
++        """零速度模型。"""
++        return np.zeros_like(z)
 +
-+    def test_not_cached_when_dir_empty(self, tmp_path: Path) -> None:
-+        elf_dir = tmp_path / "embedded-language-flows" / "ELF-B-owt-torch"
-+        elf_dir.mkdir(parents=True)
-+        assert _check_elf_cached(tmp_path) is False
++    @staticmethod
++    def _identity_model(z: np.ndarray, _t: float) -> np.ndarray:
++        """恒等速度模型。"""
++        return z
 +
-+    def test_not_cached_when_no_dir(self, tmp_path: Path) -> None:
-+        assert _check_elf_cached(tmp_path) is False
++    # ── 基本功能 ─────────────────────────────
 +
-+    def test_cached_with_checkpoint_file(self, tmp_path: Path) -> None:
-+        (tmp_path / "checkpoint_95085").touch()
-+        assert _check_elf_cached(tmp_path) is True
-+
-+
-+class TestCheckDatasetCached:
-+    """_check_dataset_cached 单元测试。"""
-+
-+    def test_cached_with_marker_file(self, tmp_path: Path) -> None:
-+        marker = tmp_path / ".nfcorpus_downloaded"
-+        marker.touch()
-+        assert _check_dataset_cached("nfcorpus", tmp_path) is True
-+
-+    def test_not_cached_without_marker(self, tmp_path: Path) -> None:
-+        assert _check_dataset_cached("nfcorpus", tmp_path) is False
-+
-+
-+class TestDownloadElfWeights:
-+    """download_elf_weights 单元测试（mock huggingface_hub）。"""
-+
-+    @patch("huggingface_hub.snapshot_download")
-+    @patch("src.utils.download._check_elf_cached", return_value=False)
-+    def test_download_success(
-+        self,
-+        mock_check: MagicMock,
-+        mock_snapshot: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        result = download_elf_weights(cache_dir=str(tmp_path))
-+
-+        # snapshot_download 创建目录，返回的路径包含完整 repo 名称
-+        expected = tmp_path / "models" / "embedded-language-flows" / "ELF-B-owt-torch"
-+        assert result == expected
-+        mock_snapshot.assert_called_once()
-+        assert mock_snapshot.call_args[1]["repo_id"] == "embedded-language-flows/ELF-B-owt-torch"
-+
-+    @patch("huggingface_hub.snapshot_download")
-+    @patch("src.utils.download._check_elf_cached", return_value=False)
-+    def test_download_skipped_when_cached(
-+        self,
-+        mock_check: MagicMock,
-+        mock_snapshot: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        # 模拟已缓存 — 并创建 repo 目录使其真实存在
-+        mock_check.return_value = True
-+        repo_dir = tmp_path / "models" / "embedded-language-flows" / "ELF-B-owt-torch"
-+        repo_dir.mkdir(parents=True)
-+        (repo_dir / "checkpoint_95085").touch()
-+
-+        result = download_elf_weights(cache_dir=str(tmp_path))
-+
-+        # 不应调用 snapshot_download
-+        mock_snapshot.assert_not_called()
-+        assert result == repo_dir
-+
-+    @patch("huggingface_hub.snapshot_download")
-+    @patch("huggingface_hub.hf_hub_download")
-+    @patch("src.utils.download._check_elf_cached", return_value=False)
-+    def test_download_fallback_to_checkpoint(
-+        self,
-+        mock_check: MagicMock,
-+        mock_hf_hub: MagicMock,
-+        mock_snapshot: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        # snapshot_download 失败
-+        mock_snapshot.side_effect = RuntimeError("Network error")
-+        mock_hf_hub.return_value = str(tmp_path / "models" / "checkpoint_95085")
-+
-+        result = download_elf_weights(cache_dir=str(tmp_path))
-+
-+        # 应回退到 checkpoint 下载
-+        mock_hf_hub.assert_called_once()
-+        mock_hf_hub.assert_called_once_with(
-+            repo_id="embedded-language-flows/ELF-B-owt-torch",
-+            filename="checkpoint_95085",
-+            local_dir=str(tmp_path / "models"),
-+            resume_download=True,
++    def test_shape_1d(self) -> None:
++        """输入 1d，输出 1d shape 不变。"""
++        z_t = np.random.randn(768).astype(np.float32)
++        z_0 = denoise_with_cfg(
++            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
 +        )
-+        assert result == tmp_path / "models"
++        assert z_0.shape == (768,)
 +
++    def test_shape_2d(self) -> None:
++        """输入 2d batch，输出 shape 不变。"""
++        z_t = np.random.randn(5, 768).astype(np.float32)
++        z_0 = denoise_with_cfg(
++            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
++        )
++        assert z_0.shape == (5, 768)
 +
-+class TestDownloadDataset:
-+    """download_dataset 单元测试（mock datasets）。"""
++    def test_dtype(self) -> None:
++        """输出 dtype 为 float32。"""
++        z_t = np.random.randn(768).astype(np.float32)
++        z_0 = denoise_with_cfg(
++            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
++        )
++        assert z_0.dtype == np.float32
 +
-+    @patch("datasets.load_dataset")
-+    @patch("src.utils.download._check_dataset_cached", return_value=False)
-+    def test_download_success(
-+        self,
-+        mock_check: MagicMock,
-+        mock_load: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        # 模拟 load_dataset 返回
-+        mock_ds = MagicMock()
-+        mock_ds.__len__.return_value = 100
-+        mock_load.return_value = {"queries": mock_ds}
++    # ── cfg_scale=1.0 行为 ──────────────────
 +
-+        download_dataset("nfcorpus", cache_dir=str(tmp_path))
++    def test_cfg_scale_one_calls_cond_only(self) -> None:
++        """cfg_scale=1.0 时只调用 cond_fn（不调 uncond_fn）。"""
++        cond_calls: list[float] = []
++        uncond_calls: list[float] = []
 +
-+        # 应调用 load_dataset 三次（主数据集 + qrels + 验证查询）
-+        assert mock_load.call_count == 3
-+        calls = [c[0] for c in mock_load.call_args_list]
-+        assert any("BeIR/nfcorpus" in str(c) and "queries" not in str(c) for c in calls)
-+        assert any("BeIR/nfcorpus-qrels" in str(c) for c in calls)
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            cond_calls.append(t)
++            return np.zeros_like(z)
 +
-+    @patch("datasets.load_dataset")
-+    @patch("src.utils.download._check_dataset_cached", return_value=False)
-+    def test_download_verification(
-+        self,
-+        mock_check: MagicMock,
-+        mock_load: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        """验证下载后会创建标记文件。"""
-+        mock_ds = MagicMock()
-+        mock_ds.__len__.return_value = 100
-+        mock_load.return_value = {"queries": mock_ds}
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            uncond_calls.append(t)
++            return np.zeros_like(z)
 +
-+        download_dataset("nfcorpus", cache_dir=str(tmp_path))
++        z_t = np.random.randn(768).astype(np.float32)
++        denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=4, cfg_scale=1.0, t_start=0.4)
++        assert len(cond_calls) == 4
++        assert len(uncond_calls) == 0
 +
-+        # 标记文件应存在
-+        marker = tmp_path / "data" / ".nfcorpus_downloaded"
-+        assert marker.is_file()
++    def test_cfg_scale_one_equals_denoise(self) -> None:
++        """cfg_scale=1.0 时结果应与纯 denoise 相同。"""
++        z_t = np.random.randn(768).astype(np.float32)
 +
-+    @patch("src.utils.download._check_dataset_cached", return_value=True)
-+    def test_download_skipped_when_cached(
-+        self,
-+        mock_check: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        # 使用无网络上下文，确保不真正调用 load_dataset
-+        with patch("datasets.load_dataset") as mock_load:
-+            download_dataset("nfcorpus", cache_dir=str(tmp_path))
-+            mock_load.assert_not_called()
++        def model_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return -z * 0.5
 +
-+    def test_unsupported_dataset(self) -> None:
-+        with pytest.raises(ValueError, match="不支持的数据集"):
-+            download_dataset("nonexistent")
++        z_plain = denoise(z_t, model_fn, steps=3, t_start=0.4)
++        z_cfg = denoise_with_cfg(z_t, model_fn, model_fn, steps=3, cfg_scale=1.0, t_start=0.4)
++        assert np.allclose(z_plain, z_cfg, atol=1e-6)
 +
-+    @patch("datasets.load_dataset")
-+    @patch("src.utils.download._check_dataset_cached", return_value=False)
-+    def test_download_all_retries_exhausted(
-+        self,
-+        mock_check: MagicMock,
-+        mock_load: MagicMock,
-+        tmp_path: Path,
-+    ) -> None:
-+        """所有重试均失败时抛出 RuntimeError。"""
-+        mock_load.side_effect = RuntimeError("Connection refused")
++    # ── velocity 级混合验证 ────────────────
 +
-+        with pytest.raises(RuntimeError, match="下载失败"):
-+            download_dataset("nfcorpus", cache_dir=str(tmp_path))
++    def test_cfg_scale_two_mixes_velocities(self) -> None:
++        """cfg_scale=2.0 时每步混合速度场，验证公式 v_uncond + 2·(v_cond - v_uncond)。"""
++        z_t = np.array([1.0, 0.0], dtype=np.float32)
 +
-+        # 应重试 _MAX_RETRIES 次
-+        assert mock_load.call_count >= 3
++        cond_calls: list[np.ndarray] = []
++        uncond_calls: list[np.ndarray] = []
 +
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            v = np.array([1.0, 0.0], dtype=np.float32)
++            cond_calls.append(v)
++            return v
 +
-+class TestDownloadAll:
-+    """download_all 单元测试。"""
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            v = np.array([0.0, 1.0], dtype=np.float32)
++            uncond_calls.append(v)
++            return v
 +
-+    @patch("src.utils.download.download_elf_weights")
-+    @patch("src.utils.download.download_dataset")
-+    def test_download_all_calls_both(
-+        self,
-+        mock_ds: MagicMock,
-+        mock_elf: MagicMock,
-+    ) -> None:
-+        download_all()
++        # 1 步: dt = (0 - 0.4) / 1 = -0.4
++        # v_cond = [1, 0], v_uncond = [0, 1]
++        # v_cfg = [0, 1] + 2 * ([1, 0] - [0, 1]) = [0, 1] + 2*[1, -1] = [2, -1]
++        # z = [1, 0] + [2, -1] * (-0.4) = [1, 0] + [-0.8, 0.4] = [0.2, 0.4]
++        z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=1, cfg_scale=2.0, t_start=0.4)
++        expected = np.array([0.2, 0.4], dtype=np.float32)
++        assert np.allclose(z_out, expected, atol=1e-6)
++        assert len(cond_calls) == 1
++        assert len(uncond_calls) == 1
 +
-+        mock_elf.assert_called_once()
-+        # 应为每个支持的数据集调用一次
-+        assert mock_ds.call_count == len(SUPPORTED_DATASETS)
++    def test_cfg_scale_zero_uses_uncond(self) -> None:
++        """cfg_scale=0.0 时 v_cfg = v_uncond（仅无条件速度场）。"""
++        z_t = np.array([1.0, 0.0], dtype=np.float32)
 +
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return np.array([10.0, 0.0], dtype=np.float32)
 +
-+class TestMainCLI:
-+    """CLI 入口 main() 单元测试。"""
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return np.array([1.0, 0.0], dtype=np.float32)
 +
-+    @patch("src.utils.download.download_all")
-+    def test_main_all(self, mock_all: MagicMock) -> None:
-+        main(["--all"])
-+        mock_all.assert_called_once()
++        # v_cfg = v_uncond + 0 * (v_cond - v_uncond) = v_uncond
++        # 应与纯 denoise(uncond_fn) 等价
++        z_plain = denoise(z_t, uncond_fn, steps=1, t_start=0.4)
++        z_cfg = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=1, cfg_scale=0.0, t_start=0.4)
++        assert np.allclose(z_plain, z_cfg, atol=1e-6)
 +
-+    @patch("src.utils.download.download_elf_weights")
-+    def test_main_elf_weights(self, mock_elf: MagicMock) -> None:
-+        main(["--elf-weights"])
-+        mock_elf.assert_called_once()
++    # ── 调用次数验证 ───────────────────────
 +
-+    @patch("src.utils.download.download_dataset")
-+    def test_main_dataset(self, mock_ds: MagicMock) -> None:
-+        main(["--dataset", "nfcorpus"])
-+        mock_ds.assert_called_once_with("nfcorpus", cache_dir=None)
++    def test_call_count_with_cfg(self) -> None:
++        """cfg_scale≠1.0 时每步调用 cond_fn 和 uncond_fn 各一次。"""
++        cond_calls: list[float] = []
++        uncond_calls: list[float] = []
 +
-+    @patch("src.utils.download.download_dataset")
-+    def test_main_dataset_with_cache_dir(self, mock_ds: MagicMock) -> None:
-+        main(["--dataset", "nfcorpus", "--cache-dir", "/my/cache"])
-+        mock_ds.assert_called_once_with("nfcorpus", cache_dir="/my/cache")
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            cond_calls.append(t)
++            return np.zeros_like(z)
 +
-+    @patch("src.utils.download.download_all")
-+    def test_main_default_to_all(self, mock_all: MagicMock) -> None:
-+        """无参数时默认下载全部。"""
-+        main([])
-+        mock_all.assert_called_once()
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            uncond_calls.append(t)
++            return np.zeros_like(z)
 +
-+    @patch("src.utils.download.download_dataset")
-+    def test_main_help(self, mock_ds: MagicMock) -> None:
-+        """--help 应打印帮助并退出。"""
-+        with pytest.raises(SystemExit):
-+            main(["--help"])
-+        mock_ds.assert_not_called()
++        z_t = np.random.randn(768).astype(np.float32)
++        denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=5, cfg_scale=2.5, t_start=0.5)
++        assert len(cond_calls) == 5
++        assert len(uncond_calls) == 5
++
++    # ── 错误处理 ───────────────────────────
++
++    def test_invalid_steps_zero(self) -> None:
++        """steps <= 0 应抛出 ValueError。"""
++        z_t = np.random.randn(768).astype(np.float32)
++        with pytest.raises(ValueError, match="正整数"):
++            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=0, cfg_scale=2.0)
++
++    def test_invalid_steps_negative(self) -> None:
++        """steps 负值应抛出 ValueError。"""
++        z_t = np.random.randn(768).astype(np.float32)
++        with pytest.raises(ValueError, match="正整数"):
++            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=-1, cfg_scale=2.0)
++
++    def test_invalid_dtype(self) -> None:
++        """非 float32 输入应抛出 ValueError。"""
++        z_t = np.random.randn(768)
++        with pytest.raises(ValueError, match="float32"):
++            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0)
++
++    # ── t_start 默认 ───────────────────────
++
++    def test_t_start_default(self) -> None:
++        """t_start=None 使用默认值 0.4。"""
++        z_t = np.random.randn(768).astype(np.float32)
++        z_explicit = denoise_with_cfg(
++            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
++        )
++        z_default = denoise_with_cfg(
++            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0
++        )
++        assert np.allclose(z_explicit, z_default, atol=1e-6)
++
++    # ── multi_step ─────────────────────────
++
++    def test_multi_step_with_cfg(self) -> None:
++        """多步 velocity 级 CFG 正常工作。"""
++        z_t = np.array([1.0, 2.0, 3.0], dtype=np.float32)
++
++        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return -z * 0.3
++
++        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
++            return -z * 0.1
++
++        z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=3, cfg_scale=2.0, t_start=0.6)
++        assert z_out.shape == (3,)
++        assert z_out.dtype == np.float32

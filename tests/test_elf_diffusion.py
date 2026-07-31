@@ -6,7 +6,7 @@
 import numpy as np
 import pytest
 
-from src.elf.diffusion import add_noise, cfg_guide, denoise, sigma
+from src.elf.diffusion import add_noise, cfg_guide, denoise, denoise_with_cfg, sigma
 
 # ──────────────────────────────────────────────
 #  sigma 调度
@@ -362,3 +362,188 @@ class TestCFGGuide:
         z_cfg = cfg_guide(z_cond, z_uncond, scale=2.0)
         assert z_cfg.shape == (768,)
         assert z_cfg.dtype == np.float32
+
+
+# ──────────────────────────────────────────────
+#  denoise_with_cfg (velocity 级 CFG)
+# ──────────────────────────────────────────────
+
+
+class TestDenoiseWithCFG:
+    """Velocity 级 CFG 去噪测试。"""
+
+    @staticmethod
+    def _zero_model(z: np.ndarray, _t: float) -> np.ndarray:
+        """零速度模型。"""
+        return np.zeros_like(z)
+
+    # ── 基本功能 ─────────────────────────────
+
+    def test_shape_1d(self) -> None:
+        """输入 1d，输出 1d shape 不变。"""
+        z_t = np.random.randn(768).astype(np.float32)
+        z_0 = denoise_with_cfg(
+            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
+        )
+        assert z_0.shape == (768,)
+
+    def test_shape_2d(self) -> None:
+        """输入 2d batch，输出 shape 不变。"""
+        z_t = np.random.randn(5, 768).astype(np.float32)
+        z_0 = denoise_with_cfg(
+            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
+        )
+        assert z_0.shape == (5, 768)
+
+    def test_dtype(self) -> None:
+        """输出 dtype 为 float32。"""
+        z_t = np.random.randn(768).astype(np.float32)
+        z_0 = denoise_with_cfg(
+            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
+        )
+        assert z_0.dtype == np.float32
+
+    # ── cfg_scale=1.0 行为 ──────────────────
+
+    def test_cfg_scale_one_calls_cond_only(self) -> None:
+        """cfg_scale=1.0 时只调用 cond_fn（不调 uncond_fn）。"""
+        cond_calls: list[float] = []
+        uncond_calls: list[float] = []
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            cond_calls.append(t)
+            return np.zeros_like(z)
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            uncond_calls.append(t)
+            return np.zeros_like(z)
+
+        z_t = np.random.randn(768).astype(np.float32)
+        denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=4, cfg_scale=1.0, t_start=0.4)
+        assert len(cond_calls) == 4
+        assert len(uncond_calls) == 0
+
+    def test_cfg_scale_one_equals_denoise(self) -> None:
+        """cfg_scale=1.0 时结果应与纯 denoise 相同。"""
+        z_t = np.random.randn(768).astype(np.float32)
+
+        def model_fn(z: np.ndarray, t: float) -> np.ndarray:
+            return -z * 0.5
+
+        z_plain = denoise(z_t, model_fn, steps=3, t_start=0.4)
+        z_cfg = denoise_with_cfg(z_t, model_fn, model_fn, steps=3, cfg_scale=1.0, t_start=0.4)
+        assert np.allclose(z_plain, z_cfg, atol=1e-6)
+
+    # ── velocity 级混合验证 ────────────────
+
+    def test_cfg_scale_two_mixes_velocities(self) -> None:
+        """cfg_scale=2.0 时每步混合速度场，验证公式 v_uncond + 2·(v_cond - v_uncond)。"""
+        z_t = np.array([1.0, 0.0], dtype=np.float32)
+
+        cond_calls: list[np.ndarray] = []
+        uncond_calls: list[np.ndarray] = []
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            v = np.array([1.0, 0.0], dtype=np.float32)
+            cond_calls.append(v)
+            return v
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            v = np.array([0.0, 1.0], dtype=np.float32)
+            uncond_calls.append(v)
+            return v
+
+        # 1 步: dt = (0 - 0.4) / 1 = -0.4
+        # v_cond = [1, 0], v_uncond = [0, 1]
+        # v_cfg = [0, 1] + 2 * ([1, 0] - [0, 1]) = [0, 1] + 2*[1, -1] = [2, -1]
+        # z = [1, 0] + [2, -1] * (-0.4) = [1, 0] + [-0.8, 0.4] = [0.2, 0.4]
+        z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=1, cfg_scale=2.0, t_start=0.4)
+        expected = np.array([0.2, 0.4], dtype=np.float32)
+        assert np.allclose(z_out, expected, atol=1e-6)
+        assert len(cond_calls) == 1
+        assert len(uncond_calls) == 1
+
+    def test_cfg_scale_zero_uses_uncond(self) -> None:
+        """cfg_scale=0.0 时 v_cfg = v_uncond（仅无条件速度场）。"""
+        z_t = np.array([1.0, 0.0], dtype=np.float32)
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            return np.array([10.0, 0.0], dtype=np.float32)
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            return np.array([1.0, 0.0], dtype=np.float32)
+
+        # v_cfg = v_uncond + 0 * (v_cond - v_uncond) = v_uncond
+        # 应与纯 denoise(uncond_fn) 等价
+        z_plain = denoise(z_t, uncond_fn, steps=1, t_start=0.4)
+        z_cfg = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=1, cfg_scale=0.0, t_start=0.4)
+        assert np.allclose(z_plain, z_cfg, atol=1e-6)
+
+    # ── 调用次数验证 ───────────────────────
+
+    def test_call_count_with_cfg(self) -> None:
+        """cfg_scale≠1.0 时每步调用 cond_fn 和 uncond_fn 各一次。"""
+        cond_calls: list[float] = []
+        uncond_calls: list[float] = []
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            cond_calls.append(t)
+            return np.zeros_like(z)
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            uncond_calls.append(t)
+            return np.zeros_like(z)
+
+        z_t = np.random.randn(768).astype(np.float32)
+        denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=5, cfg_scale=2.5, t_start=0.5)
+        assert len(cond_calls) == 5
+        assert len(uncond_calls) == 5
+
+    # ── 错误处理 ───────────────────────────
+
+    def test_invalid_steps_zero(self) -> None:
+        """steps <= 0 应抛出 ValueError。"""
+        z_t = np.random.randn(768).astype(np.float32)
+        with pytest.raises(ValueError, match="正整数"):
+            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=0, cfg_scale=2.0)
+
+    def test_invalid_steps_negative(self) -> None:
+        """steps 负值应抛出 ValueError。"""
+        z_t = np.random.randn(768).astype(np.float32)
+        with pytest.raises(ValueError, match="正整数"):
+            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=-1, cfg_scale=2.0)
+
+    def test_invalid_dtype(self) -> None:
+        """非 float32 输入应抛出 ValueError。"""
+        z_t = np.random.randn(768)
+        with pytest.raises(ValueError, match="float32"):
+            denoise_with_cfg(z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0)
+
+    # ── t_start 默认 ───────────────────────
+
+    def test_t_start_default(self) -> None:
+        """t_start=None 使用默认值 0.4。"""
+        z_t = np.random.randn(768).astype(np.float32)
+        z_explicit = denoise_with_cfg(
+            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0, t_start=0.4
+        )
+        z_default = denoise_with_cfg(
+            z_t, self._zero_model, self._zero_model, steps=1, cfg_scale=2.0
+        )
+        assert np.allclose(z_explicit, z_default, atol=1e-6)
+
+    # ── multi_step ─────────────────────────
+
+    def test_multi_step_with_cfg(self) -> None:
+        """多步 velocity 级 CFG 正常工作。"""
+        z_t = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+
+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            return -z * 0.3
+
+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
+            return -z * 0.1
+
+        z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=3, cfg_scale=2.0, t_start=0.6)
+        assert z_out.shape == (3,)
+        assert z_out.dtype == np.float32

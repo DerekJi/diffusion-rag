@@ -1,42 +1,58 @@
 # 开发任务
 
 ## Issue 描述
-标题: 创建资产下载脚本与缓存管理 src/utils/download.py
+标题: CFG 引导改为 velocity 级混合（去噪循环内部）
 需求:
 ## 问题描述
 
-文档附录 B 的快速启动命令包含 ，且文档 §1.5 明确列出了  的需求。当前该文件不存在，无法自动下载 ELF 权重和评测数据。
+### 当前实现（post-hoc 向量级混合）
+ 中分别跑完整 cond/uncond denoise，然后混合最终向量：
+
+
+### 文档要求（velocity 级混合）
+文档公式明确写的是速度场级的 CFG：
+> 
+
+这意味着在每个去噪步内同时调用 cond 和 uncond model_fn，混合速度场后再推进 ODE。
+
+### 区别
+- 当前方案：**Z 空间混合** — 
+- 文档方案：**V 空间混合** — ，每一步推进 
+
+两者不等价。V 空间混合是扩散模型 CFG 的标准实现方式（每一步都在修正生成路径）。
 
 ## 具体任务
 
-### 1. 创建 
-实现三路加载策略（HuggingFace / Google Drive / 本地缓存）：
+### 1. 修改  — 
+- 在  循环层面实现 velocity 级 CFG
+- 每个 denoise 步骤同时调用 cond 和 uncond model_fn
+- 混合速度场：
+- ODE 推进：
+- 保持  时与仅去噪等价（只调用 cond_fn）
 
+### 2. 修改或新增去噪函数
+- 在  中新增  函数，封装上述逻辑
+- 或扩展  支持  和  参数
 
+### 3. 更新 
+- 导出新增函数
 
-### 2. 支持命令行调用
--  — 下载全部资产
--  — 仅下载 ELF-B 权重
--  — 仅下载指定数据集
--  — 指定缓存目录
-
-### 3. 主要功能
-- 从 HuggingFace Hub 下载 ELF-B 模型权重（或自动回退到小版本）
-- 从 HuggingFace datasets 下载 BEIR 评测数据
-- 自动重试（最多 3 次）+ 超时 60s
-- 检查本地缓存避免重复下载
-- 进度条显示（使用 tqdm）
-
-### 4. 单元测试
--  — mock huggingface_hub，验证下载逻辑
+### 4. 更新测试
+-  — 增加  的单元测试
+-  — 验证 velocity 级 CFG 的调用次数和输出 shape
 
 ## 验收标准
 
-- [ ]  显示帮助信息
-- [ ]  下载 NFCorpus 数据集
-- [ ] 已有缓存时跳过下载
-- [ ] 下载失败后自动重试 3 次
+- [ ]  在每个步内同时调用 cond_fn 和 uncond_fn
+- [ ]  时只调用 cond_fn（与  等价）
+- [ ]  时混合速度场后再推进
 - [ ] 所有现有测试通过
+- [ ] black . --line-length 100 --check
+isort . --check-only
+Skipped 1 files
+mypy src/ --strict
+Success: no issues found in 22 source files
+All static checks passed. 通过
 
 ## 项目开发规范
 请严格遵循以下仓库定义的标准来完成任务。

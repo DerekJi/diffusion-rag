@@ -1,12 +1,13 @@
 """扩散正反向与 CFG 引导接口。
 
-提供三个核心函数:
-  add_noise  — 前向加噪
-  denoise    — 反向去噪（ODE 推进）
-  cfg_guide  — 无分类器引导
+提供四个核心函数:
+  add_noise       — 前向加噪
+  denoise         — 反向去噪（Euler ODE 推进）
+  denoise_with_cfg — Velocity 级 CFG 去噪（每步混合速度场）
+  cfg_guide       — 无分类器引导（后处理 / Z 空间混合）
 
 与 ELFEncoder 配合构成完整增强链路:
-  encode(text) → add_noise → denoise → cfg_guide → L2 normalize → FAISS search
+  encode(text) → add_noise → denoise_with_cfg → L2 normalize → FAISS search
 """
 
 from collections.abc import Callable
@@ -142,14 +143,98 @@ def denoise(
     for i in range(steps):
         t_curr = t_start + i * dt
         v = model_fn(z, t_curr)
-        z = z + v * dt
+        z = np.asarray(z + v * dt, dtype=np.float32)
 
     logger.debug("denoise: steps=%d, t_start=%.2f, shape=%s", steps, t_start, z_t.shape)
     return z.reshape(-1) if is_1d else z
 
 
 # ──────────────────────────────────────────────
-#  CFG 引导
+#  Velocity 级 CFG 去噪
+# ──────────────────────────────────────────────
+
+
+def denoise_with_cfg(
+    z_t: NDArray[np.float32],
+    cond_fn: Callable[[NDArray[np.float32], float], NDArray[np.float32]],
+    uncond_fn: Callable[[NDArray[np.float32], float], NDArray[np.float32]],
+    steps: int = 2,
+    cfg_scale: float = 2.0,
+    t_start: float | None = None,
+    t_end: float = 0.0,
+) -> NDArray[np.float32]:
+    """Velocity 级 CFG 去噪: 每步混合速度场后推进 ODE。
+
+    在每个去噪步骤中同时调用 cond_fn 和 uncond_fn 预测速度场，
+    按 CFG 公式混合后再推进:
+        v_cond = cond_fn(z, t)
+        v_uncond = uncond_fn(z, t)
+        v_cfg = v_uncond + cfg_scale · (v_cond - v_uncond)
+        z ← z + v_cfg · Δt
+
+    等价形式: v_cfg = cfg_scale · v_cond + (1 - cfg_scale) · v_uncond
+
+    cfg_scale=1.0 时只调用 cond_fn，与普通 denoise 等价。
+
+    Args:
+        z_t: 加噪向量。shape (d,) 或 (n, d)。
+        cond_fn: 条件速度场函数，签名 cond_fn(z, t) → v。
+        uncond_fn: 无条件速度场函数，签名 uncond_fn(z, t) → v。
+        steps: 去噪步数（ODE 步数）。
+        cfg_scale: CFG 引导强度。1.0 时仅去噪（只调 cond_fn）。
+        t_start: 起始时间。默认与 z_t 对应噪声水平匹配。
+        t_end: 终止时间，通常为 0.0。
+
+    Returns:
+        去噪后的向量，shape 与 z_t 相同。
+
+    Raises:
+        ValueError: steps <= 0。
+        ValueError: z_t 不是 float32。
+
+    Examples:
+        >>> z_t = np.random.randn(768).astype(np.float32)
+        >>> identity = lambda z, t: z
+        >>> z_0 = denoise_with_cfg(z_t, identity, identity, steps=2, cfg_scale=2.0, t_start=0.4)
+        >>> z_0.shape
+        (768,)
+    """
+    if steps <= 0:
+        raise ValueError(f"steps 必须为正整数，got {steps}")
+    if z_t.dtype != np.float32:
+        raise ValueError(f"z_t 必须是 float32，got {z_t.dtype}")
+
+    if t_start is None:
+        t_start = DEFAULT_NOISE_T
+
+    is_1d = z_t.ndim == 1
+    z = np.atleast_2d(z_t).copy()
+
+    dt = (t_end - t_start) / steps
+    use_cfg = abs(cfg_scale - 1.0) > 1e-6
+
+    for i in range(steps):
+        t_curr = t_start + i * dt
+        if use_cfg:
+            v_cond = cond_fn(z, t_curr)
+            v_uncond = uncond_fn(z, t_curr)
+            v = v_uncond + cfg_scale * (v_cond - v_uncond)
+        else:
+            v = cond_fn(z, t_curr)
+        z = np.asarray(z + v * dt, dtype=np.float32)
+
+    logger.debug(
+        "denoise_with_cfg: steps=%d, t_start=%.2f, cfg_scale=%.1f, shape=%s",
+        steps,
+        t_start,
+        cfg_scale,
+        z_t.shape,
+    )
+    return z.reshape(-1) if is_1d else z
+
+
+# ──────────────────────────────────────────────
+#  CFG 引导（后处理 / Z 空间混合）
 # ──────────────────────────────────────────────
 
 

@@ -1,7 +1,7 @@
 """ELF 扩散增强链路。
 
-整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise) 与
-CFG 引导 (cfg_guide) 的完整链路。
+整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise_with_cfg) 与
+Velocity 级 CFG 去噪的完整链路。
 
 典型用法::
 
@@ -18,7 +18,7 @@ from collections.abc import Callable
 import numpy as np
 from numpy.typing import NDArray
 
-from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, cfg_guide, denoise, sigma
+from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, denoise_with_cfg, sigma
 from src.elf.encoder import ELFEncoder
 from src.elf.native_encoder import ELFNativeEncoder
 from src.utils.device import get_device
@@ -130,7 +130,7 @@ class ELFPipeline:
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
-        """完整增强链路: encode → add_noise → denoise → [CFG] → L2 normalize。
+        """完整增强链路: encode → add_noise → denoise_with_cfg → L2 normalize。
 
         Args:
             text: 输入文本。
@@ -148,19 +148,19 @@ class ELFPipeline:
         # Step 2: 加噪
         z_t = add_noise(z_0, t=noise_t, rng=rng)
 
-        # Step 3: 条件去噪
+        # Step 3: Velocity 级 CFG 去噪（每步混合速度场）
         cond_fn = self._model_fn_cond or _default_model_fn
-        z_cond = denoise(z_t, cond_fn, steps=steps, t_start=noise_t)
+        uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
+        z_out = denoise_with_cfg(
+            z_t,
+            cond_fn=cond_fn,
+            uncond_fn=uncond_fn,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            t_start=noise_t,
+        )
 
-        # Step 4: CFG 引导（scale 不为 1.0 时）
-        if abs(cfg_scale - 1.0) > 1e-6:
-            uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
-            z_uncond = denoise(z_t, uncond_fn, steps=steps, t_start=noise_t)
-            z_out = cfg_guide(z_cond, z_uncond, scale=cfg_scale)
-        else:
-            z_out = z_cond
-
-        # Step 5: L2 归一化
+        # Step 4: L2 归一化
         norm = float(np.linalg.norm(z_out))
         if norm > 1e-8:
             z_out = z_out / norm
