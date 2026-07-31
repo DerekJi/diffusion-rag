@@ -30,6 +30,9 @@ DEFAULT_ELF_CFG_SCALE = 2.0
 # Colab 模式（Phase 4 启用）
 COLAB_MODE = False
 
+# 支持的数据集列表（从 BEIR_DATASET_MAP 派生，供 CLI choices 与校验共用）
+SUPPORTED_DATASETS: tuple[str, ...] = ("nfcorpus", "msmarco", "nq", "fiqa")
+
 # BEIR 数据集映射（供 download.py 与 dataset.py 共用）
 BEIR_DATASET_MAP: dict[str, str] = {
     "nfcorpus": "BeIR/nfcorpus",
@@ -37,3 +40,7 @@ BEIR_DATASET_MAP: dict[str, str] = {
     "nq": "BeIR/nq",
     "fiqa": "BeIR/fiqa",
 }
+
+# 评测编排器默认路径
+DEFAULT_GRID_CONFIG = "experiments/configs/param_grid.yaml"
+DEFAULT_OUTPUT_DIR = "experiments/outputs"
