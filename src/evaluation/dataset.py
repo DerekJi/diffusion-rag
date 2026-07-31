@@ -9,17 +9,10 @@ from dataclasses import dataclass, field
 from datasets import Dataset
 from datasets import load_dataset as hf_load_dataset
 
+from src.config import BEIR_DATASET_MAP
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-# HuggingFace 数据集映射
-_DATASET_MAP: dict[str, str] = {
-    "nfcorpus": "BeIR/nfcorpus",
-    "msmarco": "BeIR/msmarco",
-    "nq": "BeIR/nq",
-    "fiqa": "BeIR/fiqa",
-}
 
 # 最大重试次数
 _MAX_RETRIES = 3
@@ -55,11 +48,11 @@ def load_dataset(name: str, cache_dir: str | None = None) -> DatasetTriple:
         ValueError: 不支持的数据集名称。
         RuntimeError: 下载失败（含网络错误）。
     """
-    if name not in _DATASET_MAP:
-        supported = ", ".join(_DATASET_MAP.keys())
+    if name not in BEIR_DATASET_MAP:
+        supported = ", ".join(BEIR_DATASET_MAP.keys())
         raise ValueError(f"不支持的数据集 '{name}'，支持: {supported}")
 
-    hf_name = _DATASET_MAP[name]
+    hf_name = BEIR_DATASET_MAP[name]
     logger.info("加载数据集 %s (HuggingFace: %s)", name, hf_name)
 
     triple = DatasetTriple()
