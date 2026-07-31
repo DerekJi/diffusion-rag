@@ -1,50 +1,44 @@
 # 开发任务
 
 ## Issue 描述
-标题: 优化 enhance_batch：先批量编码再批量扩散
+标题: Phase 3.1: 双链路集成
 需求:
-## 问题描述
+## 目标
+将 Phase 2 实现的 ELF Pipeline 接入现有检索框架，实现 Baseline / ELF 双链路一键切换。
 
-### 当前实现
- 是逐条串行 for 循环：
+## 依据
+docs/diffusion-rag-plan.md §3.1 阶段 3 任务 3.1
+
+## 开发前必读
+- .reasonix/commands/feature.md — 功能实现流程
+- .reasonix/commands/develop.md — 开发规范
+- .reasonix/commands/code-review.md — 审查标准
+- .reasonix/commands/fix-bug.md — 修复流程
+
+## 任务详情
+
+### 需要修改的文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| src/config.py | 修改 | 增加 BASELINE / ELF 链路常量 |
+| src/baseline/benchmark.py | 修改 | 重构 run_benchmark() 支持 method 参数 |
+| src/evaluation/runner.py (新建) | 新建 | 统一评测入口 |
+
+### 接口约定
 
 
 
-### 问题
-- 每个文本独立调用 （每次模型前向传播 1 条）
-- 扩散步骤也是逐条执行，没有利用 numpy 的批量向量运算
-- 在 Colab 上批量评测时效率很低
+### 验证标准
+-  输出指标
+-  输出指标
+- pytest tests/ -q -m "not slow" 全部通过
+- black + isort + mypy --strict 全部通过
 
-### 代码中的 TODO
-代码已标注需要优化：
-> "批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，再在向量维度上批量执行扩散步骤"
+### 风险提示
+- ELF 模型需网络下载，参考 TestBaselineEncoderMock 写 mock 测试
+- CI 无 GPU，用 --sample 10 快速验证
 
-## 具体任务
-
-### 1. 修改 
-优化后的流程：
-
-
-### 2. 确保扩散函数支持批量
--  — 已验证支持  输入 ✅
--  — 已验证支持  输入 ✅
--  — 已验证支持  输入 ✅
-
-### 3. 更新单元测试
-- 增加  与  逐个结果的一致性验证（相同 seed + 相同输入）
-- 增加批量大小与性能的基本验证
-
-## 验收标准
-
-- [ ]  编码器只调用 1 次（batch），不是 3 次
-- [ ] 批量输出与逐条输出的数值一致（固定 seed）
-- [ ] 所有现有测试通过
-- [ ] black . --line-length 100 --check
-isort . --check-only
-Skipped 1 files
-mypy src/ --strict
-Success: no issues found in 22 source files
-All static checks passed. 通过
 
 ## 项目开发规范
 请严格遵循以下仓库定义的标准来完成任务。

@@ -17,6 +17,16 @@ DEFAULT_ENCODER = "BAAI/bge-base-en-v1.5"
 DEFAULT_SEED = 42
 DEFAULT_REPEATS = 3  # Phase 5
 
+# 双链路方法常量 (Phase 3.1)
+METHOD_BASELINE = "baseline"
+METHOD_ELF = "elf"
+SUPPORTED_METHODS: tuple[str, ...] = (METHOD_BASELINE, METHOD_ELF)
+
+# ELF 增强默认参数（与 src/elf/pipeline.py 默认值一致）
+DEFAULT_ELF_STEPS = 2
+DEFAULT_ELF_NOISE_T = 0.4
+DEFAULT_ELF_CFG_SCALE = 2.0
+
 # Colab 模式（Phase 4 启用）
 COLAB_MODE = False
 
