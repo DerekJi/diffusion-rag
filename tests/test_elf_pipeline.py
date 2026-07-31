@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from src.elf.pipeline import ELFPipeline, _default_model_fn
 
@@ -23,8 +24,8 @@ class _FakeEncoder:
     """
 
     def __init__(self) -> None:
-        rng = np.random.RandomState(42)
-        self._vecs = rng.randn(64, 768).astype(np.float32)
+        rng = np.random.default_rng(42)
+        self._vecs = rng.standard_normal((64, 768)).astype(np.float32)
         self._vecs /= np.linalg.norm(self._vecs, axis=1, keepdims=True)
         self._table: dict[str, np.ndarray] = {}
         self.encode_calls = 0
@@ -35,11 +36,11 @@ class _FakeEncoder:
             self._table[text] = self._vecs[len(self._table) % len(self._vecs)]
         return self._table[text]
 
-    def encode(self, text: str) -> np.ndarray:
+    def encode(self, text: str) -> NDArray[np.float32]:
         self.encode_calls += 1
         return self._vec_for(text)
 
-    def encode_batch(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+    def encode_batch(self, texts: list[str], batch_size: int = 32) -> NDArray[np.float32]:
         self.encode_batch_calls += 1
         return np.stack([self._vec_for(text) for text in texts])
 
@@ -50,8 +51,8 @@ def _mock_encoder() -> None:
 
     所有测试自动生效。
     """
-    rng = np.random.RandomState(42)
-    fixed_vec = rng.randn(768).astype(np.float32)
+    rng = np.random.default_rng(42)
+    fixed_vec = rng.standard_normal(768).astype(np.float32)
     fixed_vec /= np.linalg.norm(fixed_vec)
 
     mock_instance = MagicMock()
@@ -366,6 +367,9 @@ class TestELFPipeline:
         assert vecs.shape == (8, 768)
         assert vecs.dtype == np.float32
         assert encoder.encode_batch_calls == 1
+        # 显式验证 L2 归一化
+        norms = np.linalg.norm(vecs, axis=1)
+        assert np.allclose(norms, 1.0, atol=1e-5)
 
     def test_enhance_batch_model_fn_batched(self) -> None:
         """性能验证: 批量模式下速度场每步只调用一次，且收到完整 batch。"""

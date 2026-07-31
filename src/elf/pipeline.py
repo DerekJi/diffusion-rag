@@ -182,6 +182,7 @@ class ELFPipeline:
         noise_t: float = DEFAULT_NOISE_T,
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
+        encode_batch_size: int = 32,
     ) -> NDArray[np.float32]:
         """批量增强: 先批量编码，再在向量维度上批量执行扩散步骤。
 
@@ -200,6 +201,7 @@ class ELFPipeline:
             noise_t: 加噪强度。
             cfg_scale: CFG 引导强度。
             rng: 可选随机数生成器（固定种子用）。
+            encode_batch_size: 编码器内部批次大小。
 
         Returns:
             shape (len(texts), 768) float32 数组。
@@ -208,7 +210,7 @@ class ELFPipeline:
             raise ValueError("文本列表不能为空")
 
         # Step 1: 批量编码 (N, 768)
-        z_0 = self.encoder.encode_batch(texts)
+        z_0 = self.encoder.encode_batch(texts, batch_size=encode_batch_size)
 
         # Step 2: 批量加噪 (N, 768)
         z_t = add_noise(z_0, t=noise_t, rng=rng)
@@ -226,7 +228,7 @@ class ELFPipeline:
         )
 
         # Step 4: 逐行 L2 归一化
-        norms = np.asarray(np.linalg.norm(z_out, axis=1, keepdims=True))
+        norms = np.linalg.norm(z_out, axis=1, keepdims=True)
         safe_norms = np.where(norms > 1e-8, norms, 1.0)
         z_out = np.asarray(z_out / safe_norms, dtype=np.float32)
 
