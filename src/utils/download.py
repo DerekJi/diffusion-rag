@@ -2,7 +2,7 @@
 """资产下载脚本与缓存管理。
 
 支持从 HuggingFace Hub 下载 ELF-B 模型权重和 BEIR 评测数据集，
-实现三路加载策略（HuggingFace / 本地缓存），
+实现两路加载策略（HuggingFace / 本地缓存），
 并支持命令行调用。
 
 Usage:
@@ -21,7 +21,7 @@ from pathlib import Path
 
 from tqdm.auto import tqdm
 
-from src.config import DATA_DIR, MODELS_DIR
+from src.config import BEIR_DATASET_MAP, DATA_DIR, MODELS_DIR
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,17 +30,8 @@ logger = get_logger(__name__)
 
 ELF_MODEL_REPO = "embedded-language-flows/ELF-B-owt-torch"
 
-# 支持的数据集映射（与 src/evaluation/dataset.py 一致）
-SUPPORTED_DATASETS: dict[str, str] = {
-    "nfcorpus": "BeIR/nfcorpus",
-    "msmarco": "BeIR/msmarco",
-    "nq": "BeIR/nq",
-    "fiqa": "BeIR/fiqa",
-}
-
 # 重试配置
 _MAX_RETRIES = 3
-_TIMEOUT_SECONDS = 60
 _RETRY_DELAY = 5.0  # 秒
 
 
@@ -101,7 +92,7 @@ def download_elf_weights(cache_dir: str | None = None) -> Path:
 
     if _check_elf_cached(models_dir):
         logger.info("ELF-B 权重已缓存，跳过下载")
-        return models_dir / ELF_MODEL_REPO if (models_dir / ELF_MODEL_REPO).is_dir() else models_dir
+        return models_dir
 
     logger.info("下载 ELF-B 模型权重 %s", ELF_MODEL_REPO)
 
@@ -115,8 +106,6 @@ def download_elf_weights(cache_dir: str | None = None) -> Path:
                 snapshot_download(
                     repo_id=ELF_MODEL_REPO,
                     local_dir=str(local_dir),
-                    local_dir_use_symlinks=False,
-                    resume_download=True,
                     tqdm_class=type(pbar),
                 )
             logger.info("ELF-B 权重下载完成: %s", local_dir)
@@ -129,7 +118,7 @@ def download_elf_weights(cache_dir: str | None = None) -> Path:
                 e,
             )
             if attempt < _MAX_RETRIES:
-                _wait_with_timeout()
+                _retry_sleep()
 
     # 回退：仅下载 checkpoint 文件
     logger.warning("完整仓库下载失败，回退到仅下载 checkpoint 文件")
@@ -156,7 +145,6 @@ def _download_elf_checkpoint_fallback(models_dir: Path) -> Path:
                 repo_id=ELF_MODEL_REPO,
                 filename="checkpoint_95085",
                 local_dir=str(models_dir),
-                resume_download=True,
             )
             logger.info("ELF checkpoint 下载完成: %s", checkpoint_path)
             return Path(checkpoint_path).parent
@@ -168,7 +156,7 @@ def _download_elf_checkpoint_fallback(models_dir: Path) -> Path:
                 e,
             )
             if attempt < _MAX_RETRIES:
-                _wait_with_timeout()
+                _retry_sleep()
 
     raise RuntimeError(
         f"ELF-B 模型下载失败，已重试 {_MAX_RETRIES} 次。"
@@ -176,8 +164,8 @@ def _download_elf_checkpoint_fallback(models_dir: Path) -> Path:
     )
 
 
-def _wait_with_timeout() -> None:
-    """等待重试间隔，同时计入总超时。"""
+def _retry_sleep() -> None:
+    """等待重试间隔。"""
     time.sleep(_RETRY_DELAY)
 
 
@@ -193,7 +181,7 @@ def _check_dataset_cached(name: str, data_dir: Path) -> bool:
     """
     # HuggingFace datasets 缓存路径为 ~/.cache/huggingface/datasets
     # 我们不做深度扫描，依赖 datasets 库自身的缓存机制
-    hf_name = SUPPORTED_DATASETS.get(name, name)
+    hf_name = BEIR_DATASET_MAP.get(name, name)
     # 简单检查 data_dir 下是否有标记文件
     marker = data_dir / f".{name}_downloaded"
     if marker.is_file():
@@ -235,11 +223,11 @@ def download_dataset(name: str, cache_dir: str | None = None) -> None:
     """
     _, data_dir = _resolve_cache_dir(cache_dir)
 
-    if name not in SUPPORTED_DATASETS:
-        supported = ", ".join(SUPPORTED_DATASETS.keys())
+    if name not in BEIR_DATASET_MAP:
+        supported = ", ".join(BEIR_DATASET_MAP.keys())
         raise ValueError(f"不支持的数据集 '{name}'，支持: {supported}")
 
-    hf_name = SUPPORTED_DATASETS[name]
+    hf_name = BEIR_DATASET_MAP[name]
 
     if _check_dataset_cached(name, data_dir):
         logger.info("数据集 %s 已缓存，跳过下载", name)
@@ -274,9 +262,16 @@ def _download_hf_dataset_with_retry(
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             with tqdm(desc=f"下载 {name}", unit="B", unit_scale=True) as pbar:
-                # 先下载并缓存数据集（不加载到内存）
+                # 显式下载 corpus 和 queries config（参照 dataset.py）
                 load_dataset(
                     hf_name,
+                    "corpus",
+                    cache_dir=str(data_dir),
+                    download_mode="reuse_dataset_if_exists",
+                )
+                load_dataset(
+                    hf_name,
+                    "queries",
                     cache_dir=str(data_dir),
                     download_mode="reuse_dataset_if_exists",
                 )
@@ -288,7 +283,6 @@ def _download_hf_dataset_with_retry(
                 )
             # 快速验证：尝试加载一个子集
             ds = load_dataset(hf_name, "queries", cache_dir=str(data_dir), split="queries")
-            pbar.update(0)  # 让进度条显示完成
             logger.info("数据集 %s 验证通过 (%d 条 queries)", name, len(ds))
             return
         except Exception as e:
@@ -301,7 +295,7 @@ def _download_hf_dataset_with_retry(
                 e,
             )
             if attempt < _MAX_RETRIES:
-                _wait_with_timeout()
+                _retry_sleep()
 
     raise RuntimeError(
         f"数据集 {name} ({hf_name}) 下载失败，已重试 {_MAX_RETRIES} 次: {last_error}"
@@ -320,7 +314,7 @@ def download_all(cache_dir: str | None = None) -> None:
     download_elf_weights(cache_dir=cache_dir)
 
     logger.info("[2/2] 下载 BEIR 评测数据集...")
-    for dataset_name in SUPPORTED_DATASETS:
+    for dataset_name in BEIR_DATASET_MAP:
         try:
             download_dataset(dataset_name, cache_dir=cache_dir)
         except (ValueError, RuntimeError) as e:
@@ -370,7 +364,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     action.add_argument(
         "--dataset",
         type=str,
-        choices=list(SUPPORTED_DATASETS.keys()),
+        choices=list(BEIR_DATASET_MAP.keys()),
         help="仅下载指定数据集",
     )
 

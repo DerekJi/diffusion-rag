@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.config import BEIR_DATASET_MAP
 from src.utils.download import (
-    SUPPORTED_DATASETS,
     _check_dataset_cached,
     _check_elf_cached,
     _resolve_cache_dir,
@@ -112,7 +112,7 @@ class TestDownloadElfWeights:
 
         # 不应调用 snapshot_download
         mock_snapshot.assert_not_called()
-        assert result == repo_dir
+        assert result == tmp_path / "models"
 
     @patch("huggingface_hub.snapshot_download")
     @patch("huggingface_hub.hf_hub_download")
@@ -136,9 +136,30 @@ class TestDownloadElfWeights:
             repo_id="embedded-language-flows/ELF-B-owt-torch",
             filename="checkpoint_95085",
             local_dir=str(tmp_path / "models"),
-            resume_download=True,
         )
         assert result == tmp_path / "models"
+
+    @patch("huggingface_hub.snapshot_download")
+    @patch("huggingface_hub.hf_hub_download")
+    @patch("src.utils.download._check_elf_cached", return_value=False)
+    def test_download_all_retries_exhausted(
+        self,
+        mock_check: MagicMock,
+        mock_hf_hub: MagicMock,
+        mock_snapshot: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """snapshot_download 和 fallback 均失败时抛出 RuntimeError。"""
+        mock_snapshot.side_effect = RuntimeError("Network error")
+        mock_hf_hub.side_effect = RuntimeError("Checkpoint download failed")
+
+        with pytest.raises(RuntimeError, match="ELF-B 模型下载失败"):
+            download_elf_weights(cache_dir=str(tmp_path))
+
+        # snapshot_download 应重试 3 次
+        assert mock_snapshot.call_count == 3
+        # hf_hub_download 也应重试 3 次
+        assert mock_hf_hub.call_count == 3
 
 
 class TestDownloadDataset:
@@ -159,11 +180,21 @@ class TestDownloadDataset:
 
         download_dataset("nfcorpus", cache_dir=str(tmp_path))
 
-        # 应调用 load_dataset 三次（主数据集 + qrels + 验证查询）
-        assert mock_load.call_count == 3
+        # 应调用 load_dataset 四次（corpus + queries + qrels + 验证查询）
+        assert mock_load.call_count == 4
         calls = [c[0] for c in mock_load.call_args_list]
-        assert any("BeIR/nfcorpus" in str(c) and "queries" not in str(c) for c in calls)
-        assert any("BeIR/nfcorpus-qrels" in str(c) for c in calls)
+        # 验证主数据集 corpus 下载传了正确的 config 和参数
+        corpus_calls = [
+            c for c in mock_load.call_args_list if c[0][:2] == ("BeIR/nfcorpus", "corpus")
+        ]
+        assert len(corpus_calls) == 1
+        assert corpus_calls[0][1]["cache_dir"] == str(tmp_path / "data")
+        assert corpus_calls[0][1]["download_mode"] == "reuse_dataset_if_exists"
+        # 验证 qrels 下载
+        qrels_calls = [c for c in mock_load.call_args_list if "BeIR/nfcorpus-qrels" in str(c[0])]
+        assert len(qrels_calls) == 1
+        assert qrels_calls[0][1]["cache_dir"] == str(tmp_path / "data")
+        assert qrels_calls[0][1]["download_mode"] == "reuse_dataset_if_exists"
 
     @patch("datasets.load_dataset")
     @patch("src.utils.download._check_dataset_cached", return_value=False)
@@ -213,8 +244,8 @@ class TestDownloadDataset:
         with pytest.raises(RuntimeError, match="下载失败"):
             download_dataset("nfcorpus", cache_dir=str(tmp_path))
 
-        # 应重试 _MAX_RETRIES 次
-        assert mock_load.call_count >= 3
+        # 应重试 _MAX_RETRIES 次（恰好 3 次，不应超过）
+        assert mock_load.call_count == 3
 
 
 class TestDownloadAll:
@@ -231,7 +262,7 @@ class TestDownloadAll:
 
         mock_elf.assert_called_once()
         # 应为每个支持的数据集调用一次
-        assert mock_ds.call_count == len(SUPPORTED_DATASETS)
+        assert mock_ds.call_count == len(BEIR_DATASET_MAP)
 
 
 class TestMainCLI:

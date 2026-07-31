@@ -19,3 +19,11 @@ DEFAULT_REPEATS = 3  # Phase 5
 
 # Colab 模式（Phase 4 启用）
 COLAB_MODE = False
+
+# BEIR 数据集映射（供 download.py 与 dataset.py 共用）
+BEIR_DATASET_MAP: dict[str, str] = {
+    "nfcorpus": "BeIR/nfcorpus",
+    "msmarco": "BeIR/msmarco",
+    "nq": "BeIR/nq",
+    "fiqa": "BeIR/fiqa",
+}
