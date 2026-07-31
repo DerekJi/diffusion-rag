@@ -1,12 +1,13 @@
 """扩散正反向与 CFG 引导接口。
 
-提供三个核心函数:
-  add_noise  — 前向加噪
-  denoise    — 反向去噪（ODE 推进）
-  cfg_guide  — 无分类器引导
+提供四个核心函数:
+  add_noise       — 前向加噪
+  denoise         — 反向去噪（Euler ODE 推进）
+  denoise_with_cfg — Velocity 级 CFG 去噪（每步混合速度场）
+  cfg_guide       — 无分类器引导（后处理 / Z 空间混合）
 
 与 ELFEncoder 配合构成完整增强链路:
-  encode(text) → add_noise → denoise → cfg_guide → L2 normalize → FAISS search
+  encode(text) → add_noise → denoise_with_cfg → L2 normalize → FAISS search
 """
 
 from collections.abc import Callable
@@ -142,7 +143,7 @@ def denoise(
     for i in range(steps):
         t_curr = t_start + i * dt
         v = model_fn(z, t_curr)
-        z = z + v * dt
+        z = np.asarray(z + v * dt, dtype=np.float32)
 
     logger.debug("denoise: steps=%d, t_start=%.2f, shape=%s", steps, t_start, z_t.shape)
     return z.reshape(-1) if is_1d else z

@@ -151,11 +151,9 @@ def create_model_pair(
 ]:
     """创建条件/无条件速度场函数对。
 
-    用于 CFG 引导：
+    用于 Velocity 级 CFG 去噪：
 
-        z_cond = denoise(z_t, cond_fn, ...)
-        z_uncond = denoise(z_t, uncond_fn, ...)
-        z_cfg = cfg_guide(z_cond, z_uncond, scale=2.0)
+        z_cfg = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=2, cfg_scale=2.0)
 
     Args:
         cond_vec: 条件文本的编码向量，shape (768,)。

@@ -1,7 +1,7 @@
 """ELF 扩散增强链路。
 
-整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise) 与
-CFG 引导 (cfg_guide) 的完整链路。
+整合编码器 (ELFEncoder)、扩散正反向 (add_noise / denoise_with_cfg) 与
+Velocity 级 CFG 去噪的完整链路。
 
 典型用法::
 
@@ -130,7 +130,7 @@ class ELFPipeline:
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
-        """完整增强链路: encode → add_noise → denoise → [CFG] → L2 normalize。
+        """完整增强链路: encode → add_noise → denoise_with_cfg → L2 normalize。
 
         Args:
             text: 输入文本。

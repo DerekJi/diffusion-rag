@@ -377,11 +377,6 @@ class TestDenoiseWithCFG:
         """零速度模型。"""
         return np.zeros_like(z)
 
-    @staticmethod
-    def _identity_model(z: np.ndarray, _t: float) -> np.ndarray:
-        """恒等速度模型。"""
-        return z
-
     # ── 基本功能 ─────────────────────────────
 
     def test_shape_1d(self) -> None:
