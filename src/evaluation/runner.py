@@ -15,62 +15,13 @@
         --steps 4 --noise-t 0.5 --cfg-scale 3.0
 """
 
-import argparse
+import sys
 
-from src.baseline.benchmark import run_benchmark
-from src.config import (
-    DEFAULT_ELF_CFG_SCALE,
-    DEFAULT_ELF_NOISE_T,
-    DEFAULT_ELF_STEPS,
-    DEFAULT_ENCODER,
-    DEFAULT_INDEX_NLIST,
-    DEFAULT_K_VALUES,
-    DEFAULT_SEED,
-    METHOD_BASELINE,
-    SUPPORTED_METHODS,
-)
+from src.baseline.benchmark import _build_parser, run_benchmark
 from src.utils.logger import get_logger
 from src.utils.seed import set_seed
 
 logger = get_logger(__name__)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    """构建统一评测入口的参数解析器。
-
-    Returns:
-        配置完成的 ArgumentParser。
-    """
-    parser = argparse.ArgumentParser(description="Baseline / ELF 双链路统一评测入口")
-    parser.add_argument(
-        "--method",
-        choices=SUPPORTED_METHODS,
-        default=METHOD_BASELINE,
-        help="检索链路: baseline（BGE 编码）或 elf（ELF 扩散增强），一键切换",
-    )
-    parser.add_argument(
-        "--dataset",
-        default="nfcorpus",
-        choices=["nfcorpus", "msmarco", "nq", "fiqa"],
-        help="数据集名称",
-    )
-    parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称（文档侧）")
-    parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES, help="k 值列表")
-    parser.add_argument("--nlist", type=int, default=DEFAULT_INDEX_NLIST, help="IVF 聚类中心数")
-    parser.add_argument(
-        "--sample",
-        type=int,
-        default=None,
-        help="仅取前 N 条 query 快速测试（默认全量）",
-    )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
-    parser.add_argument("--output", default="experiments/outputs", help="输出目录")
-    parser.add_argument("--steps", type=int, default=DEFAULT_ELF_STEPS, help="ELF 去噪步数")
-    parser.add_argument("--noise-t", type=float, default=DEFAULT_ELF_NOISE_T, help="ELF 加噪强度 t")
-    parser.add_argument(
-        "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
-    )
-    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         进程退出码（0 表示成功）。
     """
-    args = build_parser().parse_args(argv)
+    args = _build_parser().parse_args(argv)
 
     set_seed(args.seed)
     df = run_benchmark(
@@ -112,4 +63,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

@@ -11,6 +11,7 @@ Phase 3.1 起支持双链路一键切换（仅替换查询编码方式）:
 """
 
 import argparse
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -132,7 +133,11 @@ def run_benchmark(
 
     query_encoder: Callable[[str], NDArray[np.float32]]
     if method == METHOD_ELF:
-        elf_pipeline = ELFPipeline()
+        try:
+            elf_pipeline = ELFPipeline()
+        except Exception as e:
+            logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
+            raise RuntimeError(f"ELF 模型加载失败: {e}") from e
         rng = np.random.default_rng(seed)
         logger.info(
             "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
@@ -191,19 +196,24 @@ def run_benchmark(
     return df
 
 
-def _main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    """构建双链路评测参数解析器（benchmark / runner 共用）。
+
+    Returns:
+        配置完成的 ArgumentParser。
+    """
     parser = argparse.ArgumentParser(description="Baseline / ELF 双链路检索评测")
-    parser.add_argument(
-        "--dataset",
-        default="nfcorpus",
-        choices=["nfcorpus", "msmarco", "nq", "fiqa"],
-        help="数据集名称",
-    )
     parser.add_argument(
         "--method",
         choices=SUPPORTED_METHODS,
         default=METHOD_BASELINE,
         help="检索链路: baseline（BGE 编码）或 elf（ELF 扩散增强）",
+    )
+    parser.add_argument(
+        "--dataset",
+        default="nfcorpus",
+        choices=["nfcorpus", "msmarco", "nq", "fiqa"],
+        help="数据集名称",
     )
     parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称（文档侧）")
     parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES, help="k 值列表")
@@ -221,7 +231,11 @@ def _main() -> None:
     parser.add_argument(
         "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _main() -> None:
+    args = _build_parser().parse_args()
 
     set_seed(args.seed)
     df = run_benchmark(
@@ -242,4 +256,4 @@ def _main() -> None:
 
 
 if __name__ == "__main__":
-    _main()
+    sys.exit(_main())

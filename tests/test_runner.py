@@ -6,8 +6,9 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from src.baseline.benchmark import _build_parser
 from src.config import METHOD_BASELINE, METHOD_ELF
-from src.evaluation.runner import build_parser, main
+from src.evaluation.runner import main
 
 
 @pytest.fixture
@@ -54,7 +55,7 @@ class TestRunnerCLI:
 
     def test_build_parser_elf_args(self) -> None:
         """参数解析器包含 ELF 专属参数。"""
-        args = build_parser().parse_args(
+        args = _build_parser().parse_args(
             ["--method", "elf", "--steps", "4", "--noise-t", "0.5", "--cfg-scale", "3.0"]
         )
         assert args.method == METHOD_ELF
