@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from numpy.typing import NDArray
 
+import src.baseline.benchmark as benchmark
 from src.baseline.benchmark import run_benchmark
 from src.config import METHOD_BASELINE, METHOD_ELF
 from src.evaluation.dataset import DatasetTriple
@@ -143,3 +144,19 @@ class TestRunBenchmark:
         df = run_benchmark(output_dir=str(self._output_dir))
         assert isinstance(df, pd.DataFrame)
         assert df["dataset"].iloc[0] == "nfcorpus"
+
+
+def test_main_returns_exit_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI 入口 `_main` 返回 int 退出码（修复 func-returns-value 类型错误）。"""
+    monkeypatch.setattr("sys.argv", ["benchmark"])
+    monkeypatch.setattr(benchmark, "set_seed", lambda seed: None)
+    monkeypatch.setattr(
+        benchmark,
+        "run_benchmark",
+        lambda **kwargs: pd.DataFrame({"dataset": ["nfcorpus"], "recall@10": [0.5]}),
+    )
+    exit_code = benchmark._main()
+    assert exit_code == 0
+    assert "recall@10" in capsys.readouterr().out

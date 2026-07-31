@@ -234,7 +234,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _main() -> None:
+def _main() -> int:
     args = _build_parser().parse_args()
 
     set_seed(args.seed)
@@ -253,6 +253,7 @@ def _main() -> None:
     )
     # print() is intentional: CLI stdout output for the result table
     print(df.to_markdown())
+    return 0
 
 
 if __name__ == "__main__":
