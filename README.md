@@ -36,6 +36,26 @@ make benchmark-quick # 10条 query 快速验证
 
 结果输出到 `experiments/outputs/<dataset>/baseline.csv`。
 
+### 双链路评测（Baseline / ELF 一键切换，Phase 3.1）
+
+统一评测入口 `src/evaluation/runner.py`，仅通过 `--method` 切换链路，
+文档编码与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）：
+
+```bash
+# Baseline 链路（BGE 编码，无扩散增强）
+python -m src.evaluation.runner --method baseline --dataset nfcorpus --sample 10
+
+# ELF 链路（查询向量经扩散增强: encode → add_noise → denoise → CFG）
+python -m src.evaluation.runner --method elf --dataset nfcorpus --sample 10
+
+# 调整 ELF 增强参数（去噪步数 / 加噪强度 / CFG 引导）
+python -m src.evaluation.runner --method elf --dataset nfcorpus \
+    --steps 4 --noise-t 0.5 --cfg-scale 3.0
+```
+
+结果分别输出到 `experiments/outputs/<dataset>/baseline.csv` 与 `elf.csv`。
+> ELF 链路首次运行需联网下载 ELF-B 模型权重；CI / 无 GPU 环境请用 `--sample 10` 快速验证。
+
 ### 运行测试
 
 ```bash
@@ -103,16 +123,23 @@ diffusion-rag/
 │   ├── fix-bug.md                 # 修复流程
 │   └── feature.md                 # 功能实现协调
 ├── src/
-│   ├── config.py                  # 全局配置
+│   ├── config.py                  # 全局配置（含双链路方法常量）
 │   ├── baseline/
 │   │   ├── encoder.py             # BGE-Mini 基线编码器
-│   │   └── benchmark.py           # 基线评测 CLI 入口
+│   │   └── benchmark.py           # 检索评测（Baseline / ELF 双链路）
+│   ├── elf/
+│   │   ├── encoder.py             # ELF 编码器封装
+│   │   ├── native_encoder.py      # ELF 原生模型编码器
+│   │   ├── diffusion.py           # add_noise / denoise / cfg_guide
+│   │   ├── model_wrapper.py       # 速度场包装器（CFG 用）
+│   │   └── pipeline.py            # 增强链路（encode → denoise → CFG → norm）
 │   ├── vector_store/
 │   │   ├── indexer.py             # FAISS 索引构建
 │   │   └── retriever.py           # 检索接口
 │   ├── evaluation/
 │   │   ├── dataset.py             # BEIR 数据集加载
-│   │   └── metrics.py             # Recall/MRR/NDCG/HitRate
+│   │   ├── metrics.py             # Recall/MRR/NDCG/HitRate
+│   │   └── runner.py              # 双链路统一评测入口
 │   └── utils/
 │       ├── logger.py              # 日志工厂
 │       ├── seed.py                # 随机种子管理
@@ -120,6 +147,9 @@ diffusion-rag/
 ├── tests/
 │   ├── conftest.py                # pytest fixtures
 │   ├── test_baseline.py           # 编码器 + FAISS + 指标测试
+│   ├── test_benchmark.py          # run_benchmark 双链路切换测试
+│   ├── test_runner.py             # 统一评测入口 CLI 测试
+│   ├── test_elf_*.py              # ELF encoder/diffusion/pipeline 测试
 │   └── test_utils.py              # 配置 + 设备测试
 ├── docs/
 │   ├── diffusion-rag-plan.md      # 整体规划与架构
@@ -141,8 +171,8 @@ diffusion-rag/
 | 阶段 | 状态 | 说明 |
 |------|------|------|
 | Phase 1 | ✅ 完成 | 传统检索基线（BGE + FAISS + BEIR 评测） |
-| Phase 2 | 🚧 进行中 | ELF 检索接口封装（3 个 Issue 已创建） |
-| Phase 3 | 🔜 待开始 | 增强链路集成 + 本地验证 |
+| Phase 2 | ✅ 完成 | ELF 检索接口封装（encoder/diffusion/pipeline） |
+| Phase 3 | 🚧 进行中 | 增强链路集成 + 本地验证（3.1 双链路切换已完成） |
 | Phase 4 | 🔜 待开始 | Colab 迁移 |
 | Phase 5 | 🔜 待开始 | 全量评测执行 |
 | Phase 6 | 🔜 待开始 | 结论分析与文档输出 |

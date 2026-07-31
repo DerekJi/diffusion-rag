@@ -67,354 +67,916 @@ variables:
   · codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session
 [2m  ▎ thinking[0m
   · codegraph: installed — symbol-graph tools available next session
-  · 9640 tok · in 9447 (6272 cached / 3175 new) · out 193 (117 reasoning) · ¥0.0108
-  -> run_skill {"name": "init", "arguments": "Quick overview of repo structure, naming conventions, and key files relevant to this PR"}
-[2m  ▎ thinking[0m
-  · 10400 tok · in 10233 (9600 cached / 633 new) · out 167 (17 reasoning) · ¥0.0031
+  · 18751 tok · in 15253 (6272 cached / 8981 new) · out 3498 (3372 reasoning) · ¥0.0481
   -> read_file {"path": ".reasonix/python-naming-conventions.instructions.md"}
-  -> ls {"path": "."}
-  -> glob {"pattern": "src/elf/**/*.py"}
-  -> glob {"pattern": "tests/**/*.py"}
+  -> read_file {"path": "src/baseline/benchmark.py"}
+  -> read_file {"path": "src/evaluation/runner.py"}
 [2m  ▎ thinking[0m
-  · 12818 tok · in 12643 (10368 cached / 2275 new) · out 175 (17 reasoning) · ¥0.0081
+  · 25121 tok · in 24994 (18688 cached / 6306 new) · out 127 (12 reasoning) · ¥0.0201
+  -> read_file {"path": "src/config.py"}
+  -> read_file {"path": "tests/test_benchmark.py"}
+  -> read_file {"path": "tests/test_runner.py"}
+[2m  ▎ thinking[0m
+  · 28705 tok · in 28569 (25088 cached / 3481 new) · out 136 (19 reasoning) · ¥0.0119
+  -> read_file {"path": "tests/test_utils.py"}
+  -> glob {"pattern": "tests/test_elf_*.py"}
+  -> glob {"pattern": "src/elf/*.py"}
+[2m  ▎ thinking[0m
+  · 29546 tok · in 29482 (28672 cached / 810 new) · out 64 (15 reasoning) · ¥0.0035
   -> read_file {"path": "src/elf/pipeline.py"}
-  -> read_file {"path": "src/elf/diffusion.py"}
-  -> read_file {"path": "src/elf/__init__.py"}
-  -> read_file {"path": "tests/test_elf_pipeline.py"}
 [2m  ▎ thinking[0m
-Let me now check the encoder interface and the `denoise_with_cfg` behavior for batch inputs more carefully:
-  · 25020 tok · in 24821 (12800 cached / 12021 new) · out 199 (57 reasoning) · ¥0.0376
-  -> read_file {"path": "src/elf/encoder.py"}
-  -> read_file {"path": "src/elf/native_encoder.py"}
+  · 32573 tok · in 32378 (29440 cached / 2938 new) · out 195 (95 reasoning) · ¥0.0107
+  -> read_file {"path": "src/elf/diffusion.py", "limit": 30}
   -> read_file {"path": "tests/conftest.py"}
 [2m  ▎ thinking[0m
-Now let me verify a few more details about the `denoise_with_cfg` behavior and the `_FakeEncoder` mock interaction:
-  · 36060 tok · in 29535 (24960 cached / 4575 new) · out 6525 (6380 reasoning) · ¥0.0535
-  -> grep {"pattern": "class _FakeEncoder", "path": "tests"}
-  -> grep {"pattern": "encode_batch", "path": "src/elf/pipeline.py"}
+  · 33425 tok · in 33193 (32512 cached / 681 new) · out 232 (182 reasoning) · ¥0.0042
+  -> read_file {"path": "src/baseline/encoder.py"}
 [2m  ▎ thinking[0m
+  · 34405 tok · in 34318 (33408 cached / 910 new) · out 87 (36 reasoning) · ¥0.0041
+  -> read_file {"path": "src/elf/__init__.py"}
+[2m  ▎ thinking[0m
+Now I have a complete picture of the changes. Let me compile the review.
+
+---
+
 ## 审查文件
-- `src/elf/pipeline.py`
-- `tests/test_elf_pipeline.py`
+- `README.md`
+- `src/baseline/benchmark.py`
+- `src/config.py`
+- `src/evaluation/runner.py` (新建)
+- `task_prompt.txt`
+- `tests/test_benchmark.py` (新建)
+- `tests/test_runner.py` (新建)
+- `tests/test_utils.py`
 
 ---
 
 ## 问题列表
 
-### [中] 公共 API 设计 / `batch_size` 参数未透传
-**文件**: `src/elf/pipeline.py:211`
-**问题**: `enhance_batch` 调用 `self.encoder.encode_batch(texts)` 时未传递 `batch_size` 参数，完全依赖编码器的默认值 (32)。对于大批量文本（如评测中数千条），用户无法通过 `enhance_batch` 控制编码器的内部批次大小，需直接操作 `encoder` 对象。
-**建议**: 为 `enhance_batch` 增加可选参数 `encode_batch_size: int = 32`，并透传给 `self.encoder.encode_batch(texts, batch_size=encode_batch_size)`。这是低风险的小改动，能提升 API 的灵活性。
+### [高] 错误处理 / ELF 模型加载无异常保护
+**文件**: `src/baseline/benchmark.py:135`
+**问题**: `ELFPipeline()` 初始化位于 `run_benchmark()` 内部，没有任何 `try/except` 包裹。ELF 模型首次运行需联网下载权重，网络失败、磁盘不足或模型不兼容会导致未捕获异常直接崩溃。对比同类代码 `BaselineEncoder.__init__` (encoder.py:41-45) 有明确的 `try/except RuntimeError` 保护。
+**建议**: 在 `ELFPipeline()` 调用处增加异常处理，至少捕获后给出可操作的错误信息：
 
-### [中] 测试覆盖 / 缺少 `enhance_batch` 输出的 L2 归一化显式断言
-**文件**: `tests/test_elf_pipeline.py:329-397`
-**问题**: 新增的 4 个 `enhance_batch` 测试中，没有一个直接断言批量输出的每行 L2 范数 ≈ 1.0。虽然 `test_enhance_batch_matches_individual` 通过与 `enhance`（已有归一化测试）对比间接覆盖，但若未来 `enhance` 的归一化逻辑被意外移除，两个方法会同时失效而不被发现。
-**建议**: 在 `test_enhance_batch_larger_batch` 或单独新增一个测试中，加入显式的 L2 归一化检查：
 ```python
-norms = np.linalg.norm(vecs, axis=1)
-assert np.allclose(norms, 1.0, atol=1e-5)
-```
-
-### [低] 测试辅助类 / `_FakeEncoder` 返回类型注解不精确
-**文件**: `tests/test_elf_pipeline.py:38-43`
-**问题**: `_FakeEncoder.encode` 和 `encode_batch` 返回类型标注为 `np.ndarray`，而真实编码器接口返回 `NDArray[np.float32]`。虽然不影响运行，但在 IDE 类型检查中会导致不一致。
-**建议**: 将返回类型统一改为 `NDArray[np.float32]`：
-```python
-def encode(self, text: str) -> NDArray[np.float32]:
-    ...
-def encode_batch(self, texts: list[str], batch_size: int = 32) -> NDArray[np.float32]:
-    ...
-```
-
-### [低] 测试辅助类 / 遗留随机 API
-**文件**: `tests/test_elf_pipeline.py:26`
-**问题**: `_FakeEncoder.__init__` 使用 `np.random.RandomState(42)`（NumPy 遗留 API），而项目其余代码已统一使用 `np.random.default_rng()`（新 API）。不影响行为，但风格不一致。
-**建议**: 改为 `np.random.default_rng(42)` 并调整后续调用（`rng.standard_normal` 等）。
-
-### [低] 批量归一化 / 冗余 `np.asarray` 包装
-**文件**: `src/elf/pipeline.py:229`
-**问题**: `np.linalg.norm(z_out, axis=1, keepdims=True)` 已返回 `ndarray`，外层 `np.asarray(...)` 是空操作，增加阅读成本。
-**建议**: 简化为：
-```python
-norms = np.linalg.norm(z_out, axis=1, keepdims=True)
+try:
+    elf_pipeline = ELFPipeline()
+except Exception as e:
+    logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
+    raise RuntimeError(f"ELF 模型加载失败: {e}") from e
 ```
 
 ---
 
-## 总结
-- **高风险问题**: 0
-- **中风险问题**: 2
-- **低风险问题**: 3
+### [中] 重复代码 / argparse 定义在两处重复维护
+**文件**: `src/baseline/benchmark.py:194-223` 与 `src/evaluation/runner.py:44-73`
+**问题**: 两个模块各自定义了几乎相同的 `argparse` 参数解析器（`_main()` 和 `main()`），参数名、默认值、help 文本完全重复。未来新增参数需要同步修改两处，容易遗漏导致行为不一致。`runner.py` 本质上是 `run_benchmark()` 的薄封装，直接复用 `benchmark.py:_main()` 的 parser 构建逻辑即可消除重复。
+**建议**: 将 `benchmark.py` 的 argparse 构建提取为模块级 `_build_parser()`，`runner.py` 直接 import 复用；或让 `runner.py` 直接调用 `benchmark.py:_main()` 而非重写 CLI。
 
-**整体评价**: 变更质量较高。核心改动——用批量编码 + 批量向量运算替换逐条串行循环——实现正确，与 `denoise_with_cfg` 的 1d/2d 兼容逻辑配合良好。新增 4 个测试覆盖了编码调用次数、批量-逐条一致性、大批量、模型函数批量调用等关键场景，`rng` 语义（共享实例 row-major 消费）的 docstring 说明清晰精确。无死代码、无 `print()` 使用、命名符合 `snake_case` 规范。两个中风险问题均为非阻塞的增强建议（API 参数透传、测试显式化），不影响合并。
-  · 37193 tok · in 36192 (35968 cached / 224 new) · out 1001 (19 reasoning) · ¥0.0076
+---
+
+### [中] 函数签名 / `run_benchmark` 参数过多（12 个）
+**文件**: `src/baseline/benchmark.py:46-58`
+**问题**: `run_benchmark()` 当前有 12 个参数，且随 Phase 推进可能继续增长（如 Phase 4 Colab 模式参数、Phase 5 repeats 参数等）。参数过多降低可读性和调用便利性——每次调用需按位置或显式关键字排列大量默认值。
+**建议**: 考虑引入 dataclass 或 `TypedDict` 收敛配置：
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class BenchmarkConfig:
+    dataset: str = "nfcorpus"
+    method: str = METHOD_BASELINE
+    encoder_name: str = DEFAULT_ENCODER
+    # ...
+    elf_steps: int = DEFAULT_ELF_STEPS
+    elf_noise_t: float = DEFAULT_ELF_NOISE_T
+    elf_cfg_scale: float = DEFAULT_ELF_CFG_SCALE
+
+def run_benchmark(config: BenchmarkConfig) -> pd.DataFrame: ...
+```
+
+这并非阻塞性问题，但建议在 Phase 4 前重构。
+
+---
+
+### [中] 命名 / `build_parser()` 应为私有函数
+**文件**: `src/evaluation/runner.py:38`
+**问题**: `build_parser()` 仅在 `main()` 中调用，且不是模块 `__all__` 导出的公共 API。按仓库命名规范（`.reasonix/python-naming-conventions.instructions.md` §3），私有辅助函数应使用 `_` 前缀。测试直接导入它验证参数解析，但测试可以导入私有函数（Python 无访问控制）。
+**建议**: 重命名为 `_build_parser()`，同步更新 `test_runner.py:10` 的 import。
+
+---
+
+### [低] 风格 / `raise SystemExit(main())` 不够地道
+**文件**: `src/evaluation/runner.py:115`
+**问题**: `raise SystemExit(main())` 虽然功能等价于 `sys.exit(main())`，但这是利用异常机制做控制流，且 `SystemExit` 作为异常类的语义是"被引发的异常"而非"主动退出"。标准 Python CLI 写法是 `sys.exit(main())`（如 CPython 官方指南和 `argparse` 文档推荐）。
+**建议**: 改为 `import sys` + `sys.exit(main())`。
+
+---
+
+### [低] 代码规范 / CLI 入口使用 `print()` 输出
+**文件**: `src/baseline/benchmark.py:241` 与 `src/evaluation/runner.py:110`
+**问题**: 两处 CLI 入口都用 `print(df.to_markdown())` 输出结果表格，并有注释标注 "intentional"。审查标准要求库代码使用 `logging` 而非 `print()`。此处属于 CLI 入口点（`__main__` 或 `main()`），直接输出到 stdout 是其职责，使用 `print()` 合理。**但** `benchmark.py` 同时也是库模块（`run_benchmark` 被 `runner.py` 导入），`_main()` 内部的 `print()` 不影响库调用路径。
+**建议**: 当前可接受，但建议后续统一使用 `logger.info()` 记录结果路径，`print()` 仅保留最终表格输出并在注释中说明理由。无需立即修改。
+
+---
+
+### [低] 类型 / `SUPPORTED_METHODS` 更适合用 `frozenset`
+**文件**: `src/config.py:23`
+**问题**: `SUPPORTED_METHODS: tuple[str, ...]` 语义上是"合法值集合"，用 `frozenset` 更直观（不可变、无序、无重复）。当前 `tuple` 也可正常工作（`argparse.choices` 接受 tuple），但若未来需要做 `method in SUPPORTED_METHODS` 的 O(1) 查找，`frozenset` 更合适。
+**建议**: `SUPPORTED_METHODS: frozenset[str] = frozenset({METHOD_BASELINE, METHOD_ELF})`。非阻塞。
+
+---
+
+## 总结
+- **高风险问题**: 1 — ELF 模型加载缺少异常保护，可能导致用户-facing 崩溃
+- **中风险问题**: 3 — argparse 重复定义、函数参数过多、`build_parser` 命名
+- **低风险问题**: 3 — `SystemExit` 风格、`print()` 用法、`SUPPORTED_METHODS` 类型选择
+
+### 整体评价
+
+变更设计合理：通过 `--method` 参数实现双链路一键切换，文档侧编码与 FAISS 索引共享，接口干净。测试覆盖全面（mock 模式正确避免了网络/GPU 依赖），命名、类型注解、docstring 基本符合仓库规范。三个中风险项建议在后续 Phase 中逐步改进，高风险的异常处理建议合入前修复。
+  · 37126 tok · in 34653 (34304 cached / 349 new) · out 2473 (882 reasoning) · ¥0.0167
 
 
 ## 代码变更 Diff
 
-diff --git a/src/elf/pipeline.py b/src/elf/pipeline.py
-index c773404..7ea09eb 100644
---- a/src/elf/pipeline.py
-+++ b/src/elf/pipeline.py
-@@ -183,14 +183,23 @@ class ELFPipeline:
-         cfg_scale: float = _DEFAULT_CFG_SCALE,
-         rng: np.random.Generator | None = None,
-     ) -> NDArray[np.float32]:
--        """批量增强（逐条串行，Phase 2.3 初版）。
-+        """批量增强: 先批量编码，再在向量维度上批量执行扩散步骤。
+diff --git a/README.md b/README.md
+index f06d6e6..a813521 100644
+--- a/README.md
++++ b/README.md
+@@ -36,6 +36,26 @@ make benchmark-quick # 10条 query 快速验证
+ 
+ 结果输出到 `experiments/outputs/<dataset>/baseline.csv`。
+ 
++### 双链路评测（Baseline / ELF 一键切换，Phase 3.1）
 +
-+        相比逐条串行调用 enhance()，本方法只调用一次批量编码
-+        （encode_batch），且加噪 / 去噪 / 归一化全部走 numpy 批量
-+        向量运算，大幅减少模型前向传播次数。
++统一评测入口 `src/evaluation/runner.py`，仅通过 `--method` 切换链路，
++文档编码与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）：
 +
-+        rng 语义：批量路径用同一个 rng 按行（row-major）消费噪声流，
-+        因此结果等价于把同一个 rng 实例逐条传给 enhance() 后堆叠；
-+        若逐条调用时各自新建相同种子的 rng，则每条会得到相同噪声，
-+        与批量路径不一致。
- 
-         Args:
-             texts: 文本列表。
-             steps: 去噪步数。
-             noise_t: 加噪强度。
-             cfg_scale: CFG 引导强度。
--            rng: 可选随机数生成器。
-+            rng: 可选随机数生成器（固定种子用）。
- 
-         Returns:
-             shape (len(texts), 768) float32 数组。
-@@ -198,11 +207,34 @@ class ELFPipeline:
-         if not texts:
-             raise ValueError("文本列表不能为空")
- 
--        # TODO: 批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，
--        # 再在向量维度上批量执行扩散步骤。
--        results: list[NDArray[np.float32]] = []
--        for text in texts:
--            vec = self.enhance(text, steps=steps, noise_t=noise_t, cfg_scale=cfg_scale, rng=rng)
--            results.append(vec)
-+        # Step 1: 批量编码 (N, 768)
-+        z_0 = self.encoder.encode_batch(texts)
- 
--        return np.stack(results, axis=0)
-+        # Step 2: 批量加噪 (N, 768)
-+        z_t = add_noise(z_0, t=noise_t, rng=rng)
++```bash
++# Baseline 链路（BGE 编码，无扩散增强）
++python -m src.evaluation.runner --method baseline --dataset nfcorpus --sample 10
 +
-+        # Step 3: Velocity 级 CFG 批量去噪（每步同时处理全部 N 条向量）
-+        cond_fn = self._model_fn_cond or _default_model_fn
-+        uncond_fn = self._model_fn_uncond or self._model_fn_cond or _default_model_fn
-+        z_out = denoise_with_cfg(
-+            z_t,
-+            cond_fn=cond_fn,
-+            uncond_fn=uncond_fn,
-+            steps=steps,
-+            cfg_scale=cfg_scale,
-+            t_start=noise_t,
++# ELF 链路（查询向量经扩散增强: encode → add_noise → denoise → CFG）
++python -m src.evaluation.runner --method elf --dataset nfcorpus --sample 10
++
++# 调整 ELF 增强参数（去噪步数 / 加噪强度 / CFG 引导）
++python -m src.evaluation.runner --method elf --dataset nfcorpus \
++    --steps 4 --noise-t 0.5 --cfg-scale 3.0
++```
++
++结果分别输出到 `experiments/outputs/<dataset>/baseline.csv` 与 `elf.csv`。
++> ELF 链路首次运行需联网下载 ELF-B 模型权重；CI / 无 GPU 环境请用 `--sample 10` 快速验证。
++
+ ### 运行测试
+ 
+ ```bash
+@@ -103,16 +123,23 @@ diffusion-rag/
+ │   ├── fix-bug.md                 # 修复流程
+ │   └── feature.md                 # 功能实现协调
+ ├── src/
+-│   ├── config.py                  # 全局配置
++│   ├── config.py                  # 全局配置（含双链路方法常量）
+ │   ├── baseline/
+ │   │   ├── encoder.py             # BGE-Mini 基线编码器
+-│   │   └── benchmark.py           # 基线评测 CLI 入口
++│   │   └── benchmark.py           # 检索评测（Baseline / ELF 双链路）
++│   ├── elf/
++│   │   ├── encoder.py             # ELF 编码器封装
++│   │   ├── native_encoder.py      # ELF 原生模型编码器
++│   │   ├── diffusion.py           # add_noise / denoise / cfg_guide
++│   │   ├── model_wrapper.py       # 速度场包装器（CFG 用）
++│   │   └── pipeline.py            # 增强链路（encode → denoise → CFG → norm）
+ │   ├── vector_store/
+ │   │   ├── indexer.py             # FAISS 索引构建
+ │   │   └── retriever.py           # 检索接口
+ │   ├── evaluation/
+ │   │   ├── dataset.py             # BEIR 数据集加载
+-│   │   └── metrics.py             # Recall/MRR/NDCG/HitRate
++│   │   ├── metrics.py             # Recall/MRR/NDCG/HitRate
++│   │   └── runner.py              # 双链路统一评测入口
+ │   └── utils/
+ │       ├── logger.py              # 日志工厂
+ │       ├── seed.py                # 随机种子管理
+@@ -120,6 +147,9 @@ diffusion-rag/
+ ├── tests/
+ │   ├── conftest.py                # pytest fixtures
+ │   ├── test_baseline.py           # 编码器 + FAISS + 指标测试
++│   ├── test_benchmark.py          # run_benchmark 双链路切换测试
++│   ├── test_runner.py             # 统一评测入口 CLI 测试
++│   ├── test_elf_*.py              # ELF encoder/diffusion/pipeline 测试
+ │   └── test_utils.py              # 配置 + 设备测试
+ ├── docs/
+ │   ├── diffusion-rag-plan.md      # 整体规划与架构
+@@ -141,8 +171,8 @@ diffusion-rag/
+ | 阶段 | 状态 | 说明 |
+ |------|------|------|
+ | Phase 1 | ✅ 完成 | 传统检索基线（BGE + FAISS + BEIR 评测） |
+-| Phase 2 | 🚧 进行中 | ELF 检索接口封装（3 个 Issue 已创建） |
+-| Phase 3 | 🔜 待开始 | 增强链路集成 + 本地验证 |
++| Phase 2 | ✅ 完成 | ELF 检索接口封装（encoder/diffusion/pipeline） |
++| Phase 3 | 🚧 进行中 | 增强链路集成 + 本地验证（3.1 双链路切换已完成） |
+ | Phase 4 | 🔜 待开始 | Colab 迁移 |
+ | Phase 5 | 🔜 待开始 | 全量评测执行 |
+ | Phase 6 | 🔜 待开始 | 结论分析与文档输出 |
+diff --git a/src/baseline/benchmark.py b/src/baseline/benchmark.py
+index a90211e..695d356 100644
+--- a/src/baseline/benchmark.py
++++ b/src/baseline/benchmark.py
+@@ -2,17 +2,37 @@
+ """基线评测 CLI 入口。
+ 
+ 运行完整检索评测流程：加载数据集 → 编码 → 建索引 → 检索 → 计算指标 → 输出报告。
++
++Phase 3.1 起支持双链路一键切换（仅替换查询编码方式）:
++  - method="baseline": 查询用 BaselineEncoder 编码（BGE，无扩散增强）
++  - method="elf":      查询用 ELFPipeline.enhance() 扩散增强
++
++文档侧编码（BGE）与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）。
+ """
+ 
+ import argparse
++from collections.abc import Callable
+ from pathlib import Path
+ 
+ import numpy as np
+ import pandas as pd
++from numpy.typing import NDArray
+ from tqdm import tqdm
+ 
+ from src.baseline.encoder import BaselineEncoder
+-from src.config import DEFAULT_ENCODER, DEFAULT_INDEX_NLIST, DEFAULT_K_VALUES, DEFAULT_SEED
++from src.config import (
++    DEFAULT_ELF_CFG_SCALE,
++    DEFAULT_ELF_NOISE_T,
++    DEFAULT_ELF_STEPS,
++    DEFAULT_ENCODER,
++    DEFAULT_INDEX_NLIST,
++    DEFAULT_K_VALUES,
++    DEFAULT_SEED,
++    METHOD_BASELINE,
++    METHOD_ELF,
++    SUPPORTED_METHODS,
++)
++from src.elf.pipeline import ELFPipeline
+ from src.evaluation.dataset import DatasetTriple, load_dataset
+ from src.evaluation.metrics import compute_metrics_batch
+ from src.utils.logger import get_logger
+@@ -25,36 +45,51 @@ logger = get_logger(__name__)
+ 
+ def run_benchmark(
+     dataset: str = "nfcorpus",
++    method: str = METHOD_BASELINE,
+     encoder_name: str = DEFAULT_ENCODER,
+     index_nlist: int = DEFAULT_INDEX_NLIST,
+     k_values: list[int] | None = None,
+     seed: int = DEFAULT_SEED,
+     output_dir: str = "experiments/outputs",
+     sample: int | None = None,
++    elf_steps: int = DEFAULT_ELF_STEPS,
++    elf_noise_t: float = DEFAULT_ELF_NOISE_T,
++    elf_cfg_scale: float = DEFAULT_ELF_CFG_SCALE,
+ ) -> pd.DataFrame:
+-    """运行完整基线评测流程。
++    """运行完整检索评测流程（Baseline / ELF 双链路）。
+ 
+     流程:
+         1. 固定随机种子
+         2. 加载数据集
+-        3. 用 BaselineEncoder 编码所有文档 → 构建 FAISS 索引
+-        4. 用 BaselineEncoder 编码所有查询
++        3. 用 BaselineEncoder 编码所有文档 → 构建 FAISS 索引（双链路共享）
++        4. 按 method 编码所有查询（仅此步切换链路）
+         5. 逐条检索 + 计算指标
+-        6. 汇总结果并保存为 CSV
++        6. 汇总结果并保存为 CSV（baseline.csv / elf.csv）
+ 
+     Args:
+         dataset: 数据集名称。
+-        encoder_name: HuggingFace 编码器名称。
++        method: 检索链路，'baseline'（BGE 编码）或 'elf'（ELF 扩散增强）。
++        encoder_name: HuggingFace 编码器名称（文档侧，两条链路共用）。
+         index_nlist: FAISS IVF 聚类中心数。
+         k_values: 评估的 k 值列表。
+         seed: 随机种子。
+         output_dir: 输出目录。
++        sample: 仅取前 N 条有 qrels 的 query 快速验证，None 为全量。
++        elf_steps: ELF 去噪步数（仅 method='elf' 生效）。
++        elf_noise_t: ELF 加噪强度 t ∈ [0, 1]（仅 method='elf' 生效）。
++        elf_cfg_scale: ELF CFG 引导强度（仅 method='elf' 生效）。
+ 
+     Returns:
+-        包含聚合指标的 DataFrame。
++        包含聚合指标的 DataFrame（一行，列含 dataset/method 及各 k 指标）。
++
++    Raises:
++        ValueError: method 不在 SUPPORTED_METHODS 中。
+     """
+     if k_values is None:
+         k_values = DEFAULT_K_VALUES
++    if method not in SUPPORTED_METHODS:
++        supported = ", ".join(SUPPORTED_METHODS)
++        raise ValueError(f"不支持的链路 method='{method}'，支持: {supported}")
+ 
+     set_seed(seed)
+ 
+@@ -92,13 +127,38 @@ def run_benchmark(
+     indexer.build(doc_vectors, doc_ids)
+     retriever = Retriever(indexer)
+ 
+-    # 3. 编码查询 + 检索
++    # 3. 编码查询 + 检索（仅此处按 method 切换链路）
+     query_ids = sorted(data.queries.keys())
+-    logger.info("检索 %d 条查询...", len(query_ids))
+ 
++    query_encoder: Callable[[str], NDArray[np.float32]]
++    if method == METHOD_ELF:
++        elf_pipeline = ELFPipeline()
++        rng = np.random.default_rng(seed)
++        logger.info(
++            "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
++            elf_steps,
++            elf_noise_t,
++            elf_cfg_scale,
 +        )
 +
-+        # Step 4: 逐行 L2 归一化
-+        norms = np.asarray(np.linalg.norm(z_out, axis=1, keepdims=True))
-+        safe_norms = np.where(norms > 1e-8, norms, 1.0)
-+        z_out = np.asarray(z_out / safe_norms, dtype=np.float32)
++        def _elf_query_encode(text: str) -> NDArray[np.float32]:
++            """ELF 链路查询编码：编码 → 加噪 → 去噪 → CFG 引导。"""
++            return elf_pipeline.enhance(
++                text,
++                steps=elf_steps,
++                noise_t=elf_noise_t,
++                cfg_scale=elf_cfg_scale,
++                rng=rng,
++            )
 +
-+        logger.debug(
-+            "enhance_batch: n=%d, steps=%d, noise_t=%.2f, cfg_scale=%.1f",
-+            len(texts),
-+            steps,
-+            noise_t,
-+            cfg_scale,
-+        )
-+        return z_out
++        query_encoder = _elf_query_encode
++    else:
++        query_encoder = encoder.encode
++
++    logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
+     all_results: dict[str, list[str]] = {}
+     for qid in tqdm(query_ids, desc="检索中"):
+-        qvec = encoder.encode(data.queries[qid])
++        qvec = query_encoder(data.queries[qid])
+         doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
+         all_results[qid] = doc_ids_found
+ 
+@@ -107,7 +167,11 @@ def run_benchmark(
+     metrics = compute_metrics_batch(data.qrels, all_results, k_values)
+ 
+     # 5. 聚合全部查询指标
+-    agg: dict[str, object] = {"dataset": dataset}
++    agg: dict[str, object] = {"dataset": dataset, "method": method}
++    if method == METHOD_ELF:
++        agg["steps"] = elf_steps
++        agg["noise_t"] = elf_noise_t
++        agg["cfg_scale"] = elf_cfg_scale
+     for k in k_values:
+         agg[f"recall@{k}"] = float(np.mean([m.recall[k] for m in metrics.values()]))
+         agg[f"precision@{k}"] = float(np.mean([m.precision[k] for m in metrics.values()]))
+@@ -117,10 +181,10 @@ def run_benchmark(
+ 
+     df = pd.DataFrame([agg])
+ 
+-    # 6. 保存
++    # 6. 保存（按链路区分文件名: baseline.csv / elf.csv）
+     out_path = Path(output_dir) / dataset
+     out_path.mkdir(parents=True, exist_ok=True)
+-    csv_path = out_path / "baseline.csv"
++    csv_path = out_path / f"{method}.csv"
+     df.to_csv(csv_path, index=False)
+     logger.info("结果已保存到 %s", csv_path)
+ 
+@@ -128,14 +192,20 @@ def run_benchmark(
+ 
+ 
+ def _main() -> None:
+-    parser = argparse.ArgumentParser(description="Baseline 检索评测")
++    parser = argparse.ArgumentParser(description="Baseline / ELF 双链路检索评测")
+     parser.add_argument(
+         "--dataset",
+         default="nfcorpus",
+         choices=["nfcorpus", "msmarco", "nq", "fiqa"],
+         help="数据集名称",
+     )
+-    parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称")
++    parser.add_argument(
++        "--method",
++        choices=SUPPORTED_METHODS,
++        default=METHOD_BASELINE,
++        help="检索链路: baseline（BGE 编码）或 elf（ELF 扩散增强）",
++    )
++    parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称（文档侧）")
+     parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES, help="k 值列表")
+     parser.add_argument("--nlist", type=int, default=DEFAULT_INDEX_NLIST, help="IVF 聚类中心数")
+     parser.add_argument(
+@@ -146,17 +216,26 @@ def _main() -> None:
+     )
+     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
+     parser.add_argument("--output", default="experiments/outputs", help="输出目录")
++    parser.add_argument("--steps", type=int, default=DEFAULT_ELF_STEPS, help="ELF 去噪步数")
++    parser.add_argument("--noise-t", type=float, default=DEFAULT_ELF_NOISE_T, help="ELF 加噪强度 t")
++    parser.add_argument(
++        "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
++    )
+     args = parser.parse_args()
+ 
+     set_seed(args.seed)
+     df = run_benchmark(
+         dataset=args.dataset,
++        method=args.method,
+         encoder_name=args.encoder,
+         index_nlist=args.nlist,
+         k_values=list(args.k),
+         seed=args.seed,
+         output_dir=args.output,
+         sample=args.sample,
++        elf_steps=args.steps,
++        elf_noise_t=args.noise_t,
++        elf_cfg_scale=args.cfg_scale,
+     )
+     # print() is intentional: CLI stdout output for the result table
+     print(df.to_markdown())
+diff --git a/src/config.py b/src/config.py
+index d695f93..006a602 100644
+--- a/src/config.py
++++ b/src/config.py
+@@ -17,6 +17,16 @@ DEFAULT_ENCODER = "BAAI/bge-base-en-v1.5"
+ DEFAULT_SEED = 42
+ DEFAULT_REPEATS = 3  # Phase 5
+ 
++# 双链路方法常量 (Phase 3.1)
++METHOD_BASELINE = "baseline"
++METHOD_ELF = "elf"
++SUPPORTED_METHODS: tuple[str, ...] = (METHOD_BASELINE, METHOD_ELF)
++
++# ELF 增强默认参数（与 src/elf/pipeline.py 默认值一致）
++DEFAULT_ELF_STEPS = 2
++DEFAULT_ELF_NOISE_T = 0.4
++DEFAULT_ELF_CFG_SCALE = 2.0
++
+ # Colab 模式（Phase 4 启用）
+ COLAB_MODE = False
+ 
+diff --git a/src/evaluation/runner.py b/src/evaluation/runner.py
+new file mode 100644
+index 0000000..e099823
+--- /dev/null
++++ b/src/evaluation/runner.py
+@@ -0,0 +1,115 @@
++#!/usr/bin/env python3
++"""统一评测入口 CLI：Baseline / ELF 双链路一键切换。
++
++基于 src.baseline.benchmark.run_benchmark()，通过 --method 选择检索链路，
++文档侧编码与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）。
++
++用法::
++
++    # Baseline 链路（BGE 编码）
++    python -m src.evaluation.runner --method baseline --dataset nfcorpus --sample 10
++
++    # ELF 增强链路（扩散增强查询向量）
++    python -m src.evaluation.runner --method elf --dataset nfcorpus --sample 10
++    python -m src.evaluation.runner --method elf --dataset nfcorpus \\
++        --steps 4 --noise-t 0.5 --cfg-scale 3.0
++"""
++
++import argparse
++
++from src.baseline.benchmark import run_benchmark
++from src.config import (
++    DEFAULT_ELF_CFG_SCALE,
++    DEFAULT_ELF_NOISE_T,
++    DEFAULT_ELF_STEPS,
++    DEFAULT_ENCODER,
++    DEFAULT_INDEX_NLIST,
++    DEFAULT_K_VALUES,
++    DEFAULT_SEED,
++    METHOD_BASELINE,
++    SUPPORTED_METHODS,
++)
++from src.utils.logger import get_logger
++from src.utils.seed import set_seed
++
++logger = get_logger(__name__)
++
++
++def build_parser() -> argparse.ArgumentParser:
++    """构建统一评测入口的参数解析器。
++
++    Returns:
++        配置完成的 ArgumentParser。
++    """
++    parser = argparse.ArgumentParser(description="Baseline / ELF 双链路统一评测入口")
++    parser.add_argument(
++        "--method",
++        choices=SUPPORTED_METHODS,
++        default=METHOD_BASELINE,
++        help="检索链路: baseline（BGE 编码）或 elf（ELF 扩散增强），一键切换",
++    )
++    parser.add_argument(
++        "--dataset",
++        default="nfcorpus",
++        choices=["nfcorpus", "msmarco", "nq", "fiqa"],
++        help="数据集名称",
++    )
++    parser.add_argument("--encoder", default=DEFAULT_ENCODER, help="编码器模型名称（文档侧）")
++    parser.add_argument("--k", type=int, nargs="+", default=DEFAULT_K_VALUES, help="k 值列表")
++    parser.add_argument("--nlist", type=int, default=DEFAULT_INDEX_NLIST, help="IVF 聚类中心数")
++    parser.add_argument(
++        "--sample",
++        type=int,
++        default=None,
++        help="仅取前 N 条 query 快速测试（默认全量）",
++    )
++    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
++    parser.add_argument("--output", default="experiments/outputs", help="输出目录")
++    parser.add_argument("--steps", type=int, default=DEFAULT_ELF_STEPS, help="ELF 去噪步数")
++    parser.add_argument("--noise-t", type=float, default=DEFAULT_ELF_NOISE_T, help="ELF 加噪强度 t")
++    parser.add_argument(
++        "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
++    )
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    """统一评测入口。
++
++    Args:
++        argv: 命令行参数列表，None 表示使用 sys.argv[1:]。
++
++    Returns:
++        进程退出码（0 表示成功）。
++    """
++    args = build_parser().parse_args(argv)
++
++    set_seed(args.seed)
++    df = run_benchmark(
++        dataset=args.dataset,
++        method=args.method,
++        encoder_name=args.encoder,
++        index_nlist=args.nlist,
++        k_values=list(args.k),
++        seed=args.seed,
++        output_dir=args.output,
++        sample=args.sample,
++        elf_steps=args.steps,
++        elf_noise_t=args.noise_t,
++        elf_cfg_scale=args.cfg_scale,
++    )
++    logger.info(
++        "评测完成: dataset=%s, method=%s → 指标已保存到 %s/%s/%s.csv",
++        args.dataset,
++        args.method,
++        args.output,
++        args.dataset,
++        args.method,
++    )
++    # print() is intentional: CLI stdout output for the result table
++    print(df.to_markdown())
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
 diff --git a/task_prompt.txt b/task_prompt.txt
-index 8b57afd..b83f0e5 100644
+index b83f0e5..a9930df 100644
 --- a/task_prompt.txt
 +++ b/task_prompt.txt
-@@ -1,51 +1,43 @@
+@@ -1,50 +1,44 @@
  # 开发任务
  
  ## Issue 描述
--标题: CFG 引导改为 velocity 级混合（去噪循环内部）
-+标题: 优化 enhance_batch：先批量编码再批量扩散
+-标题: 优化 enhance_batch：先批量编码再批量扩散
++标题: Phase 3.1: 双链路集成
  需求:
- ## 问题描述
+-## 问题描述
++## 目标
++将 Phase 2 实现的 ELF Pipeline 接入现有检索框架，实现 Baseline / ELF 双链路一键切换。
  
--### 当前实现（post-hoc 向量级混合）
-- 中分别跑完整 cond/uncond denoise，然后混合最终向量：
-+### 当前实现
-+ 是逐条串行 for 循环：
+-### 当前实现
+- 是逐条串行 for 循环：
++## 依据
++docs/diffusion-rag-plan.md §3.1 阶段 3 任务 3.1
+ 
++## 开发前必读
++- .reasonix/commands/feature.md — 功能实现流程
++- .reasonix/commands/develop.md — 开发规范
++- .reasonix/commands/code-review.md — 审查标准
++- .reasonix/commands/fix-bug.md — 修复流程
+ 
++## 任务详情
+ 
+-### 问题
+-- 每个文本独立调用 （每次模型前向传播 1 条）
+-- 扩散步骤也是逐条执行，没有利用 numpy 的批量向量运算
+-- 在 Colab 上批量评测时效率很低
++### 需要修改的文件
+ 
+-### 代码中的 TODO
+-代码已标注需要优化：
+-> "批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，再在向量维度上批量执行扩散步骤"
++| 文件 | 操作 | 说明 |
++|------|------|------|
++| src/config.py | 修改 | 增加 BASELINE / ELF 链路常量 |
++| src/baseline/benchmark.py | 修改 | 重构 run_benchmark() 支持 method 参数 |
++| src/evaluation/runner.py (新建) | 新建 | 统一评测入口 |
+ 
+-## 具体任务
++### 接口约定
+ 
+-### 1. 修改 
+-优化后的流程：
  
  
--### 文档要求（velocity 级混合）
--文档公式明确写的是速度场级的 CFG：
--> 
+-### 2. 确保扩散函数支持批量
+--  — 已验证支持  输入 ✅
+--  — 已验证支持  输入 ✅
+--  — 已验证支持  输入 ✅
++### 验证标准
++-  输出指标
++-  输出指标
++- pytest tests/ -q -m "not slow" 全部通过
++- black + isort + mypy --strict 全部通过
  
--这意味着在每个去噪步内同时调用 cond 和 uncond model_fn，混合速度场后再推进 ODE。
-+### 问题
-+- 每个文本独立调用 （每次模型前向传播 1 条）
-+- 扩散步骤也是逐条执行，没有利用 numpy 的批量向量运算
-+- 在 Colab 上批量评测时效率很低
+-### 3. 更新单元测试
+-- 增加  与  逐个结果的一致性验证（相同 seed + 相同输入）
+-- 增加批量大小与性能的基本验证
++### 风险提示
++- ELF 模型需网络下载，参考 TestBaselineEncoderMock 写 mock 测试
++- CI 无 GPU，用 --sample 10 快速验证
  
--### 区别
--- 当前方案：**Z 空间混合** — 
--- 文档方案：**V 空间混合** — ，每一步推进 
+-## 验收标准
 -
--两者不等价。V 空间混合是扩散模型 CFG 的标准实现方式（每一步都在修正生成路径）。
-+### 代码中的 TODO
-+代码已标注需要优化：
-+> "批量扩散优化 — 先用 self.encoder.encode_batch(texts) 批量编码，再在向量维度上批量执行扩散步骤"
+-- [ ]  编码器只调用 1 次（batch），不是 3 次
+-- [ ] 批量输出与逐条输出的数值一致（固定 seed）
+-- [ ] 所有现有测试通过
+-- [ ] black . --line-length 100 --check
+-isort . --check-only
+-Skipped 1 files
+-mypy src/ --strict
+-Success: no issues found in 22 source files
+-All static checks passed. 通过
  
- ## 具体任务
- 
--### 1. 修改  — 
--- 在  循环层面实现 velocity 级 CFG
--- 每个 denoise 步骤同时调用 cond 和 uncond model_fn
--- 混合速度场：
--- ODE 推进：
--- 保持  时与仅去噪等价（只调用 cond_fn）
-+### 1. 修改 
-+优化后的流程：
- 
--### 2. 修改或新增去噪函数
--- 在  中新增  函数，封装上述逻辑
--- 或扩展  支持  和  参数
- 
--### 3. 更新 
--- 导出新增函数
-+### 2. 确保扩散函数支持批量
-+-  — 已验证支持  输入 ✅
-+-  — 已验证支持  输入 ✅
-+-  — 已验证支持  输入 ✅
- 
--### 4. 更新测试
---  — 增加  的单元测试
---  — 验证 velocity 级 CFG 的调用次数和输出 shape
-+### 3. 更新单元测试
-+- 增加  与  逐个结果的一致性验证（相同 seed + 相同输入）
-+- 增加批量大小与性能的基本验证
- 
- ## 验收标准
- 
--- [ ]  在每个步内同时调用 cond_fn 和 uncond_fn
--- [ ]  时只调用 cond_fn（与  等价）
--- [ ]  时混合速度场后再推进
-+- [ ]  编码器只调用 1 次（batch），不是 3 次
-+- [ ] 批量输出与逐条输出的数值一致（固定 seed）
- - [ ] 所有现有测试通过
- - [ ] black . --line-length 100 --check
- isort . --check-only
-diff --git a/tests/test_elf_pipeline.py b/tests/test_elf_pipeline.py
-index a5c7388..eca8d81 100644
---- a/tests/test_elf_pipeline.py
-+++ b/tests/test_elf_pipeline.py
-@@ -15,6 +15,35 @@ from src.elf.pipeline import ELFPipeline, _default_model_fn
- # ──────────────────────────────────────────────
- 
- 
-+class _FakeEncoder:
-+    """测试用假编码器：每段文本映射到固定的 768-dim 向量。
+ ## 项目开发规范
+ 请严格遵循以下仓库定义的标准来完成任务。
+diff --git a/tests/test_benchmark.py b/tests/test_benchmark.py
+new file mode 100644
+index 0000000..67d1e77
+--- /dev/null
++++ b/tests/test_benchmark.py
+@@ -0,0 +1,145 @@
++"""run_benchmark 双链路单元测试。
 +
-+    实现 encode / encode_batch，并统计调用次数，
-+    用于验证批量路径只调用一次批量编码。
-+    """
++全部依赖均 mock（数据集 / 文档编码器 / ELFPipeline），
++无需网络下载与 GPU，参考 TestBaselineEncoderMock 的 mock 模式。
++"""
 +
-+    def __init__(self) -> None:
++from collections.abc import Iterator
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import numpy as np
++import pandas as pd
++import pytest
++from numpy.typing import NDArray
++
++from src.baseline.benchmark import run_benchmark
++from src.config import METHOD_BASELINE, METHOD_ELF
++from src.evaluation.dataset import DatasetTriple
++
++
++def _make_fake_data(n_queries: int = 4, n_docs: int = 8) -> DatasetTriple:
++    """构造小型合成数据集（qrels 引用的 doc 均在 corpus 内）。"""
++    queries = {f"q{i}": f"query text {i}" for i in range(n_queries)}
++    corpus = {f"d{i}": f"doc text {i}" for i in range(n_docs)}
++    qrels = {f"q{i}": {f"d{i}": 1, f"d{(i + 1) % n_docs}": 1} for i in range(n_queries)}
++    return DatasetTriple(queries=queries, corpus=corpus, qrels=qrels)
++
++
++class TestRunBenchmark:
++    """run_benchmark 双链路切换测试。"""
++
++    @pytest.fixture(autouse=True)
++    def _mock_dependencies(self, tmp_path: Path) -> Iterator[None]:
++        """mock 数据集加载、文档编码器与 ELFPipeline。"""
 +        rng = np.random.RandomState(42)
-+        self._vecs = rng.randn(64, 768).astype(np.float32)
-+        self._vecs /= np.linalg.norm(self._vecs, axis=1, keepdims=True)
-+        self._table: dict[str, np.ndarray] = {}
-+        self.encode_calls = 0
-+        self.encode_batch_calls = 0
++        self._fixed_vec = rng.randn(768).astype(np.float32)
++        self._fixed_vec /= np.linalg.norm(self._fixed_vec)
++        fixed_vec = self._fixed_vec
 +
-+    def _vec_for(self, text: str) -> np.ndarray:
-+        if text not in self._table:
-+            self._table[text] = self._vecs[len(self._table) % len(self._vecs)]
-+        return self._table[text]
++        def _encode(text: str | list[str], **kwargs: object) -> NDArray[np.float32]:
++            if isinstance(text, str):
++                return fixed_vec
++            return np.tile(fixed_vec, (len(text), 1))
 +
-+    def encode(self, text: str) -> np.ndarray:
-+        self.encode_calls += 1
-+        return self._vec_for(text)
++        doc_encoder = MagicMock()
++        doc_encoder.encode.side_effect = _encode
 +
-+    def encode_batch(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
-+        self.encode_batch_calls += 1
-+        return np.stack([self._vec_for(text) for text in texts])
++        self._elf_pipeline_mock = MagicMock()
++        self._elf_pipeline_mock.enhance.return_value = fixed_vec
++
++        patchers = [
++            patch("src.baseline.benchmark.load_dataset", return_value=_make_fake_data()),
++            patch("src.baseline.encoder.SentenceTransformer", return_value=doc_encoder),
++            patch("src.baseline.benchmark.ELFPipeline", return_value=self._elf_pipeline_mock),
++        ]
++        for p in patchers:
++            p.start()
++        self._output_dir = tmp_path
++        yield
++        for p in patchers:
++            p.stop()
++
++    # ── baseline 链路 ─────────────────────────
++
++    def test_default_method_is_baseline(self) -> None:
++        """默认 method='baseline'，输出 baseline.csv。"""
++        df = run_benchmark(output_dir=str(self._output_dir))
++        assert df["method"].iloc[0] == METHOD_BASELINE
++        assert (self._output_dir / "nfcorpus" / "baseline.csv").exists()
++
++    def test_baseline_outputs_all_metrics(self) -> None:
++        """baseline 输出全部指标列（recall/precision/ndcg/hit_rate/mrr）。"""
++        df = run_benchmark(output_dir=str(self._output_dir))
++        assert len(df) == 1
++        for k in [5, 10, 20]:
++            assert f"recall@{k}" in df.columns
++            assert f"precision@{k}" in df.columns
++            assert f"ndcg@{k}" in df.columns
++            assert f"hit_rate@{k}" in df.columns
++            assert 0.0 <= df[f"recall@{k}"].iloc[0] <= 1.0
++        assert "mrr" in df.columns
++
++    def test_baseline_does_not_touch_elf_pipeline(self) -> None:
++        """baseline 链路不创建 ELFPipeline（不加载 ELF 模型）。"""
++        run_benchmark(output_dir=str(self._output_dir))
++        assert self._elf_pipeline_mock.enhance.call_count == 0
++
++    # ── elf 链路 ──────────────────────────────
++
++    def test_elf_method_uses_pipeline(self) -> None:
++        """method='elf' 时每条 query 调用一次 enhance()，输出 elf.csv。"""
++        df = run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir))
++        assert df["method"].iloc[0] == METHOD_ELF
++        assert df["steps"].iloc[0] == 2
++        assert df["noise_t"].iloc[0] == 0.4
++        assert df["cfg_scale"].iloc[0] == 2.0
++        assert self._elf_pipeline_mock.enhance.call_count == 4
++        assert (self._output_dir / "nfcorpus" / "elf.csv").exists()
++
++    def test_elf_method_passes_params(self) -> None:
++        """elf 增强参数（steps/noise_t/cfg_scale/rng）正确透传。"""
++        run_benchmark(
++            method=METHOD_ELF,
++            elf_steps=4,
++            elf_noise_t=0.5,
++            elf_cfg_scale=3.0,
++            output_dir=str(self._output_dir),
++        )
++        call = self._elf_pipeline_mock.enhance.call_args
++        assert call.kwargs["steps"] == 4
++        assert call.kwargs["noise_t"] == 0.5
++        assert call.kwargs["cfg_scale"] == 3.0
++        # 可复现性：传入顺序消费的 Generator
++        assert isinstance(call.kwargs["rng"], np.random.Generator)
++
++    def test_elf_reproducible_with_same_seed(self) -> None:
++        """相同 seed 两次运行，enhance 收到的 rng 状态一致 → 结果可复现。"""
++        run_benchmark(method=METHOD_ELF, seed=42, output_dir=str(self._output_dir))
++        first_rng_state = self._elf_pipeline_mock.enhance.call_args.kwargs[
++            "rng"
++        ].bit_generator.state
++        self._elf_pipeline_mock.reset_mock()
++        run_benchmark(method=METHOD_ELF, seed=42, output_dir=str(self._output_dir))
++        second_rng_state = self._elf_pipeline_mock.enhance.call_args.kwargs[
++            "rng"
++        ].bit_generator.state
++        assert first_rng_state == second_rng_state
++
++    # ── 采样 / 参数校验 ───────────────────────
++
++    def test_sample_limits_queries(self) -> None:
++        """sample=N 时只对前 N 条 query 编码检索。"""
++        run_benchmark(method=METHOD_ELF, sample=2, output_dir=str(self._output_dir))
++        assert self._elf_pipeline_mock.enhance.call_count == 2
++
++    def test_invalid_method_raises(self) -> None:
++        """非法 method 抛出 ValueError。"""
++        with pytest.raises(ValueError, match="不支持的链路"):
++            run_benchmark(method="invalid", output_dir=str(self._output_dir))
++
++    def test_returns_dataframe(self) -> None:
++        """返回单行聚合指标 DataFrame。"""
++        df = run_benchmark(output_dir=str(self._output_dir))
++        assert isinstance(df, pd.DataFrame)
++        assert df["dataset"].iloc[0] == "nfcorpus"
+diff --git a/tests/test_runner.py b/tests/test_runner.py
+new file mode 100644
+index 0000000..1944c1e
+--- /dev/null
++++ b/tests/test_runner.py
+@@ -0,0 +1,63 @@
++"""src.evaluation.runner CLI 单元测试。"""
++
++from collections.abc import Iterator
++from unittest.mock import MagicMock, patch
++
++import pandas as pd
++import pytest
++
++from src.config import METHOD_BASELINE, METHOD_ELF
++from src.evaluation.runner import build_parser, main
 +
 +
- @pytest.fixture(autouse=True)
- def _mock_encoder() -> None:
-     """mock ELFEncoder 的 SentenceTransformer，返回固定 768-dim 向量。
-@@ -297,6 +326,76 @@ class TestELFPipeline:
-         with pytest.raises(ValueError, match="不能为空"):
-             pipe.enhance_batch([])
++@pytest.fixture
++def _mock_run_benchmark() -> Iterator[MagicMock]:
++    """mock run_benchmark，返回一行聚合指标。"""
++    df = pd.DataFrame(
++        [{"dataset": "nfcorpus", "method": "baseline", "recall@10": 0.5, "mrr": 0.25}]
++    )
++    with patch("src.evaluation.runner.run_benchmark", return_value=df) as mock_rb:
++        yield mock_rb
++
++
++class TestRunnerCLI:
++    """统一评测入口 CLI 测试。"""
++
++    def test_main_baseline_passthrough(self, _mock_run_benchmark: MagicMock) -> None:
++        """--method baseline 正确透传到 run_benchmark。"""
++        code = main(["--method", "baseline", "--dataset", "nfcorpus", "--sample", "2"])
++        assert code == 0
++        kwargs = _mock_run_benchmark.call_args.kwargs
++        assert kwargs["method"] == METHOD_BASELINE
++        assert kwargs["dataset"] == "nfcorpus"
++        assert kwargs["sample"] == 2
++
++    def test_main_elf_params_passthrough(self, _mock_run_benchmark: MagicMock) -> None:
++        """ELF 增强参数（steps/noise-t/cfg-scale）正确透传。"""
++        code = main(["--method", "elf", "--steps", "4", "--noise-t", "0.5", "--cfg-scale", "3.0"])
++        assert code == 0
++        kwargs = _mock_run_benchmark.call_args.kwargs
++        assert kwargs["method"] == METHOD_ELF
++        assert kwargs["elf_steps"] == 4
++        assert kwargs["elf_noise_t"] == 0.5
++        assert kwargs["elf_cfg_scale"] == 3.0
++
++    def test_default_method_is_baseline(self, _mock_run_benchmark: MagicMock) -> None:
++        """不传 --method 时默认 baseline。"""
++        main([])
++        assert _mock_run_benchmark.call_args.kwargs["method"] == METHOD_BASELINE
++
++    def test_invalid_method_exits(self) -> None:
++        """非法 method 触发 argparse SystemExit。"""
++        with pytest.raises(SystemExit):
++            main(["--method", "invalid"])
++
++    def test_build_parser_elf_args(self) -> None:
++        """参数解析器包含 ELF 专属参数。"""
++        args = build_parser().parse_args(
++            ["--method", "elf", "--steps", "4", "--noise-t", "0.5", "--cfg-scale", "3.0"]
++        )
++        assert args.method == METHOD_ELF
++        assert args.steps == 4
++        assert args.noise_t == 0.5
++        assert args.cfg_scale == 3.0
+diff --git a/tests/test_utils.py b/tests/test_utils.py
+index 0e68fba..e07eb8b 100644
+--- a/tests/test_utils.py
++++ b/tests/test_utils.py
+@@ -1,10 +1,16 @@
+ """配置与工具模块单元测试。"""
  
-+    def test_enhance_batch_encodes_once(self) -> None:
-+        """批量编码只调用 1 次（不是逐条调用 N 次）。"""
-+        encoder = _FakeEncoder()
-+        pipe = ELFPipeline(device="cpu", encoder=encoder)
-+        pipe.enhance_batch(["a", "b", "c"], steps=2, noise_t=0.4, cfg_scale=1.0)
-+        assert encoder.encode_batch_calls == 1
-+        assert encoder.encode_calls == 0
-+
-+    def test_enhance_batch_matches_individual(self) -> None:
-+        """批量输出与逐条输出数值一致（相同 seed + 相同输入）。
-+
-+        批量路径用同一个 rng 按行消费噪声流，等价于把同一个 rng
-+        逐条传给 enhance()。
-+        """
-+        pipe = ELFPipeline(device="cpu", encoder=_FakeEncoder())
-+        texts = ["query one", "query two", "query three"]
-+        batch_vecs = pipe.enhance_batch(
-+            texts, steps=2, noise_t=0.4, cfg_scale=2.0, rng=np.random.default_rng(42)
-+        )
-+        shared_rng = np.random.default_rng(42)
-+        per_item = np.stack(
-+            [
-+                pipe.enhance(text, steps=2, noise_t=0.4, cfg_scale=2.0, rng=shared_rng)
-+                for text in texts
-+            ]
-+        )
-+        assert batch_vecs.shape == (3, 768)
-+        assert np.allclose(batch_vecs, per_item, atol=1e-6)
-+
-+    def test_enhance_batch_larger_batch(self) -> None:
-+        """批量大小验证: 更大批量仍返回 (N, 768) 且只编码一次。"""
-+        encoder = _FakeEncoder()
-+        pipe = ELFPipeline(device="cpu", encoder=encoder)
-+        texts = [f"query number {i}" for i in range(8)]
-+        vecs = pipe.enhance_batch(
-+            texts, steps=2, noise_t=0.4, cfg_scale=1.0, rng=np.random.default_rng(42)
-+        )
-+        assert vecs.shape == (8, 768)
-+        assert vecs.dtype == np.float32
-+        assert encoder.encode_batch_calls == 1
-+
-+    def test_enhance_batch_model_fn_batched(self) -> None:
-+        """性能验证: 批量模式下速度场每步只调用一次，且收到完整 batch。"""
-+        cond_shapes: list[tuple[int, ...]] = []
-+        uncond_shapes: list[tuple[int, ...]] = []
-+
-+        def cond_fn(z: np.ndarray, t: float) -> np.ndarray:
-+            cond_shapes.append(z.shape)
-+            return -z * 0.1
-+
-+        def uncond_fn(z: np.ndarray, t: float) -> np.ndarray:
-+            uncond_shapes.append(z.shape)
-+            return -z * 0.1
-+
-+        pipe = ELFPipeline(
-+            device="cpu",
-+            encoder=_FakeEncoder(),
-+            model_fn_cond=cond_fn,
-+            model_fn_uncond=uncond_fn,
-+        )
-+        texts = [f"query number {i}" for i in range(5)]
-+        pipe.enhance_batch(
-+            texts, steps=3, noise_t=0.4, cfg_scale=2.0, rng=np.random.default_rng(42)
-+        )
-+        # 每步调用一次（共 steps 次），而非逐条串行的 steps × N 次
-+        assert len(cond_shapes) == 3
-+        assert len(uncond_shapes) == 3
-+        assert all(shape == (5, 768) for shape in cond_shapes)
-+        assert all(shape == (5, 768) for shape in uncond_shapes)
-+
-     # ── 默认构造函数 ───────────────────────
+ from src.config import (
++    DEFAULT_ELF_CFG_SCALE,
++    DEFAULT_ELF_NOISE_T,
++    DEFAULT_ELF_STEPS,
+     DEFAULT_ENCODER,
+     DEFAULT_INDEX_NLIST,
+     DEFAULT_K_VALUES,
+     DEFAULT_SEED,
++    METHOD_BASELINE,
++    METHOD_ELF,
++    SUPPORTED_METHODS,
+     VECTOR_DIM,
+ )
+ from src.utils.device import get_device
+@@ -28,6 +34,16 @@ class TestConfig:
+     def test_default_nlist(self) -> None:
+         assert DEFAULT_INDEX_NLIST == 100
  
-     def test_default_construction(self) -> None:
++    def test_method_constants(self) -> None:
++        assert METHOD_BASELINE == "baseline"
++        assert METHOD_ELF == "elf"
++        assert SUPPORTED_METHODS == (METHOD_BASELINE, METHOD_ELF)
++
++    def test_elf_default_params(self) -> None:
++        assert DEFAULT_ELF_STEPS == 2
++        assert DEFAULT_ELF_NOISE_T == 0.4
++        assert DEFAULT_ELF_CFG_SCALE == 2.0
++
+ 
+ class TestDevice:
+     """device 模块单元测试。"""
