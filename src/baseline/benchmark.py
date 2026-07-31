@@ -173,6 +173,7 @@ def run_benchmark(
 
     # 5. 聚合全部查询指标
     agg: dict[str, object] = {"dataset": dataset, "method": method}
+    agg["n_queries"] = len(query_ids)
     if method == METHOD_ELF:
         agg["steps"] = elf_steps
         agg["noise_t"] = elf_noise_t

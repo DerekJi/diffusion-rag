@@ -1,43 +1,37 @@
 # 开发任务
 
 ## Issue 描述
-标题: Phase 3.1: 双链路集成
+标题: Phase 3.2: 评测编排器 + 参数网格 + 报表生成
 需求:
 ## 目标
-将 Phase 2 实现的 ELF Pipeline 接入现有检索框架，实现 Baseline / ELF 双链路一键切换。
+实现评测编排器 (Orchestrator) + 结果报表生成器 (Reporter) + 参数网格配置。
 
 ## 依据
-docs/diffusion-rag-plan.md §3.1 阶段 3 任务 3.1
-
-## 开发前必读
-- .reasonix/commands/feature.md — 功能实现流程
-- .reasonix/commands/develop.md — 开发规范
-- .reasonix/commands/code-review.md — 审查标准
-- .reasonix/commands/fix-bug.md — 修复流程
+docs/diffusion-rag-plan.md §3.1 阶段 3 任务 3.2 / 3.3 / 3.4
 
 ## 任务详情
 
-### 需要修改的文件
+### 需要新建/修改的文件
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| src/config.py | 修改 | 增加 BASELINE / ELF 链路常量 |
-| src/baseline/benchmark.py | 修改 | 重构 run_benchmark() 支持 method 参数 |
-| src/evaluation/runner.py (新建) | 新建 | 统一评测入口 |
+| experiments/configs/param_grid.yaml (新建) | 新建 | 12 组 ELF 参数 + Baseline 对照组的 YAML 配置 |
+| src/evaluation/orchestrator.py (新建) | 新建 | 遍历参数组、跑双链路、收集指标 |
+| src/evaluation/reporter.py (新建) | 新建 | 输出 CSV 对比表 + JSON 摘要 |
 
-### 接口约定
+### 参数网格布局
 
 
 
 ### 验证标准
--  输出指标
--  输出指标
+- ptests/test_orchestrator.py 有编排器自动遍历 1-2 组参数的单元测试
+- python -m src.evaluation.orchestrator --config experiments/configs/param_grid.yaml --dataset nfcorpus --sample 5 产出 CSV
 - pytest tests/ -q -m "not slow" 全部通过
-- black + isort + mypy --strict 全部通过
+- 所有检查：black + isort + mypy --strict 通过
 
-### 风险提示
-- ELF 模型需网络下载，参考 TestBaselineEncoderMock 写 mock 测试
-- CI 无 GPU，用 --sample 10 快速验证
+### 风险
+- YAML 配置结构自行设计即可，参考 config.py 已有默认值
+- 断点续跑功能（跳过已完成参数组）可以稍后实现
 
 
 ## 项目开发规范

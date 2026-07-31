@@ -1,0 +1,37 @@
+# 参数网格配置 — Phase 3.2
+# 12 组 ELF 增强参数 + Baseline 对照组
+# 结构参考 docs/diffusion-rag-plan.md §3.2（参数网格表）与 §9.3（YAML schema）
+
+dataset: "nfcorpus"            # nfcorpus / msmarco / nq / fiqa
+
+baseline:
+  encoder: "BAAI/bge-base-en-v1.5"   # 文档侧编码器（双链路共享）
+  device: "auto"
+
+elf:
+  encoder: "BAAI/bge-base-en-v1.5"   # 与 baseline 一致，文档侧编码双链路共用
+  device: "auto"
+  # 显式列表（非笛卡尔积），共 12 组：
+  #   steps     — 去噪步数
+  #   noise_t   — 加噪起始 t（对应 run_benchmark 的 elf_noise_t）
+  #   cfg_scale — CFG 引导强度（1.0 = 无 CFG）
+  param_list:
+    - {id: "ELF-01", steps: 1, noise_t: 0.3, cfg_scale: 1.0}
+    - {id: "ELF-02", steps: 1, noise_t: 0.5, cfg_scale: 1.0}
+    - {id: "ELF-03", steps: 1, noise_t: 0.3, cfg_scale: 2.0}
+    - {id: "ELF-04", steps: 1, noise_t: 0.5, cfg_scale: 2.0}
+    - {id: "ELF-05", steps: 2, noise_t: 0.3, cfg_scale: 1.0}
+    - {id: "ELF-06", steps: 2, noise_t: 0.5, cfg_scale: 1.0}
+    - {id: "ELF-07", steps: 2, noise_t: 0.3, cfg_scale: 2.0}
+    - {id: "ELF-08", steps: 2, noise_t: 0.5, cfg_scale: 3.0}
+    - {id: "ELF-09", steps: 4, noise_t: 0.4, cfg_scale: 1.0}
+    - {id: "ELF-10", steps: 4, noise_t: 0.4, cfg_scale: 2.0}
+    - {id: "ELF-11", steps: 4, noise_t: 0.6, cfg_scale: 1.0}
+    - {id: "ELF-12", steps: 4, noise_t: 0.6, cfg_scale: 3.0}
+
+eval:
+  k_values: [5, 10, 20]
+  nlist: 100
+  seed: 42
+  sample: null               # null = 全量；命令行 --sample 可覆盖
+  output_dir: "experiments/outputs"
