@@ -64,1096 +64,119 @@ variables:
 
 ## 审查报告
 
+  · codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session
 [2m  ▎ thinking[0m
-# 代码审查
-
-让我先快速确认相关文件的完整上下文。
-  · 27263 tok · in 22761 (7808 cached / 14953 new) · out 4502 (4414 reasoning) · ¥0.0721
-  -> mcp__codegraph__codegraph_context {"task": "Review PR diff: diagnose_elf.py, benchmark.py, orchestrator.py changes for vector space alignment fix (issue #...
-  ⊘ mcp__codegraph__codegraph_context plugin tool reported error: Error: Tool execution failed: No CodeGraph project is loaded for this session.
+  · codegraph: installed — symbol-graph tools available next session
+  · 8388 tok · in 7888 (6272 cached / 1616 new) · out 500 (339 reasoning) · ¥0.0080
+  -> read_file {"path": "src/elf/diffusion.py"}
+  -> read_file {"path": "tests/test_elf_diffusion.py"}
+  -> read_file {"path": "tests/test_elf_pipeline.py"}
+  -> glob {"pattern": ".reasonix/python-naming-conventions.instructions.md"}
 [2m  ▎ thinking[0m
-  · 27745 tok · in 27570 (27136 cached / 434 new) · out 175 (16 reasoning) · ¥0.0030
-  -> read_file {"path": "src/baseline/benchmark.py"}
-  -> read_file {"path": "src/evaluation/orchestrator.py"}
-  -> read_file {"path": "tests/test_benchmark.py"}
-  -> read_file {"path": "tests/test_orchestrator.py"}
+  · 26577 tok · in 26438 (8320 cached / 18118 new) · out 139 (25 reasoning) · ¥0.0554
+  -> read_file {"path": ".reasonix/python-naming-conventions.instructions.md"}
+  -> ls {"path": "src/elf"}
+  -> ls {"path": "docs"}
 [2m  ▎ thinking[0m
-  · 45660 tok · in 45558 (27648 cached / 17910 new) · out 102 (19 reasoning) · ¥0.0550
-  -> read_file {"path": "experiments/diagnose_elf.py"}
-  -> read_file {"path": "src/config.py"}
-[2m  ▎ thinking[0m
-  · 53279 tok · in 53119 (45568 cached / 7551 new) · out 160 (43 reasoning) · ¥0.0248
-  -> grep {"pattern": "def encode", "path": "src/elf/pipeline.py"}
-  -> grep {"pattern": "def encode_batch", "path": "src/elf"}
-[2m  ▎ thinking[0m
----
-
-## 审查文件
-- `experiments/diagnose_elf.py`
-- `html/elf-root-cause-analysis.html`（新增）
-- `src/baseline/benchmark.py`
-- `src/evaluation/orchestrator.py`
-- `tests/test_benchmark.py`
-- `tests/test_orchestrator.py`
-
----
-
-## 问题列表
-
-### [高] 模块边界 / 依赖方向
-**文件**: `src/baseline/benchmark.py:38`
-**问题**: `build_benchmark_context` 新增了对 `ELFPipeline` 的直接导入和实例化（L141-143），形成 `baseline → elf` 的反向依赖。`baseline` 模块原本是"基础层"（文档编码、建索引入口），现在内部耦合了 ELF 专用逻辑。后续如新增第三种 method，`build_benchmark_context` 会继续膨胀。
-**建议**: 将文档编码器的"按 method 选择"逻辑抽到 `src/evaluation/orchestrator.py`，或引入一个轻量工厂函数 `src/utils/encoder_factory.py`（接收 `method` 返回 `(encoder, elf_pipeline)`）。`build_benchmark_context` 保持接收已构造好的 encoder/elf_pipeline，不要自己 new。
-
-### [高] 测试断言虚设——未验证 ELFPipeline 是否被构造
-**文件**: `tests/test_benchmark.py:186-193`
-**问题**: `test_build_context_baseline_docs_use_bge` 断言 `self._elf_pipeline_mock.enhance.call_count == 0`。但 `self._elf_pipeline_mock` 是在 `setup_method` 中创建的独立 MagicMock，**从未被注入**到被测系统（`build_benchmark_context` 在 `method='baseline'` 时不调用 `ELFPipeline()`，所以这个 mock 全程闲置）。断言 trivially 通过，但没有真正验证 "ELFPipeline 未被构造"。
-**建议**: 在该测试中额外 patch `src.baseline.benchmark.ELFPipeline`，然后 assert 该 patch 的 `call_count == 0`。
-
-### [中] 重复采样逻辑——两处拷贝
-**文件**: `experiments/diagnose_elf.py:191-202` vs `src/baseline/benchmark.py:118-129`
-**问题**: `_rebuild_context_from_vectors` 中的采样逻辑（qids_with_qrels → referenced → DatasetTriple）与 `build_benchmark_context` 完全一致，逐字拷贝。后续若调整采样策略，两处必须同步修改，容易遗漏。
-**建议**: 将采样逻辑提取为公共工具函数（例如 `src/utils/sample.py` 中 `sample_dataset(data, n)`），两处调用同一函数。
-
-### [中] `encoder_name` 参数对 `method='elf'` 是 dead argument
-**文件**: `src/baseline/benchmark.py:79`
-**问题**: `build_benchmark_context(encoder_name=...)` 在 `method='elf'` 分支中完全不使用（仅 `method='baseline'` 时传给 `BaselineEncoder`）。但签名中它是必选参数（有默认值 `DEFAULT_ENCODER`），导致 `method='elf'` 的调用方仍须传入一个无意义的 `encoder_name` 值。
-**建议**: 将 `encoder_name` 的默认值设为 `None`，在 `method='baseline'` 分支中 fallback 到 `DEFAULT_ENCODER`；或将其改为 keyword-only 并在非 baseline 时不校验。
-
-### [中] `_encode_queries_elf_raw` 存在隐式入参修改
-**文件**: `experiments/diagnose_elf.py:260-261`
-**问题**: `if ctx.elf_pipeline is None: ctx.elf_pipeline = ELFPipeline()` — 函数直接修改入参 `ctx` 的属性。虽然 `_encode_queries_elf` 有同样模式（一致），但这属于副作用，调用方不易察觉。
-**建议**: 在 `_prepare_docs` 阶段就确保 `ctx.elf_pipeline` 已初始化（`_rebuild_context_from_vectors` 的 ELF 分支已经做了），然后在 `_encode_queries_elf_raw` 中改为 `assert ctx.elf_pipeline is not None`，或通过 `ctx.elf_pipeline` 做 defensive get。
-
-### [中] 缺少针对 elf-raw / `_analyze_group` 新参数的直接测试
-**文件**: `tests/test_benchmark.py` / `tests/test_orchestrator.py`
-**问题**: `_analyze_group` 重构后新增 `baseline_top10` 参数（分离 overlap 与 shift 的计算），`_encode_queries_elf_raw` 是诊断关键新增函数——两者均无直接单元测试。当前测试仅覆盖 `build_benchmark_context` 和 `run_grid` 的集成行为。
-**建议**: 为 `_analyze_group` 增加参数组合测试（仅 qvecs / 含 base_qvecs / 含 baseline_top10 / 全部），为 `_encode_queries_elf_raw` 增加 smoke test。
-
-### [低] `n_docs` JSON 输出类型变化（向后不兼容）
-**文件**: `experiments/diagnose_elf.py:518`
-**问题**: `n_docs` 从 `int` 变为 `{"baseline": N, "elf": M}`。若有下游脚本解析 `diagnosis.json` 的 `n_docs` 字段，会因类型变化而 break。
-**建议**: 风险低（诊断脚本输出多为一次性消费），但可在 changelog 或 commit message 中注明。
-
-### [低] 不必要的 `print()` 调用
-**文件**: `experiments/diagnose_elf.py:530`
-**问题**: `print(report_md)` 在 `_main()` 中用于 CLI 输出。虽然同类代码 `src/baseline/benchmark.py:364` 也有 `print(df.to_markdown())`（两者都在 `if __name__ == "__main__"` 路径上），但按审查标准的严格解释，库文件中的 `print()` 应改为 `logging`。由于这两处是 CLI 入口的主观输出（不是调试打印），风险极低。
-**建议**: 保持现状可接受；若要严格合规，可改用 `logger.info()` 并将 report 作为单条日志输出，或通过 `sys.stdout.write()` 明确表达"这是 CLI stdout"语义。
-
-### [低] `html/elf-root-cause-analysis.html` 放置位置
-**文件**: `html/elf-root-cause-analysis.html`（新增）
-**问题**: 项目已有 `docs/` 目录存放计划和设计文档。该 HTML 是一份根因分析报告，放在顶层 `html/` 新目录中，与既有结构不一致。
-**建议**: 移到 `docs/analysis/` 或 `experiments/outputs/nfcorpus/diagnosis/` 下，与 `diagnosis.md` 放在一起。
-
-### [低] `test_build_context_baseline_docs_use_bge` 接收无用的 `tmp_path` fixture
-**文件**: `tests/test_benchmark.py:186`
-**问题**: 函数签名包含 `tmp_path` 但未使用，mypy/pylint 会报警。
-**建议**: 移除 `tmp_path` 参数，或通过 `@pytest.mark.usefixtures("tmp_path")` 隐式注入。
-
----
-
-## 总结
-- **高风险问题**: 2（模块边界反向依赖 + 测试断言虚设）
-- **中风险问题**: 5（重复采样逻辑 / dead argument / ctx 隐式修改 / 缺失单测 / encoder_name 语义）
-- **低风险问题**: 4（n_docs 类型变化 / print() / HTML 位置 / 无用 fixture）
-  · 56173 tok · in 53421 (53248 cached / 173 new) · out 2752 (1006 reasoning) · ¥0.0184
 
 
 ## 代码变更 Diff
 
-diff --git a/experiments/diagnose_elf.py b/experiments/diagnose_elf.py
-index 413cfba..ebd26e0 100644
---- a/experiments/diagnose_elf.py
-+++ b/experiments/diagnose_elf.py
-@@ -29,11 +29,12 @@ import json
- import time
- from pathlib import Path
- 
-+import faiss
- import numpy as np
- 
- from src.baseline.benchmark import BenchmarkContext, build_benchmark_context
- from src.baseline.encoder import BaselineEncoder
--from src.config import SUPPORTED_DATASETS
-+from src.config import METHOD_BASELINE, METHOD_ELF, SUPPORTED_DATASETS
- from src.elf.pipeline import ELFPipeline
- from src.evaluation.dataset import DatasetTriple, load_dataset
- from src.evaluation.orchestrator import ExperimentConfig, load_param_grid
-@@ -52,6 +53,8 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
- 
-     文档向量在构建索引时按 add 顺序对齐 doc_ids,FAISS 的
-     reconstruct(i) 按添加顺序取回,因此顺序一致。
-+    IVF 索引默认不初始化 DirectMap(直接映射),reconstruct 会抛
-+    "direct map not initialized",需要先启用 Hashtable 映射。
+diff --git a/src/elf/diffusion.py b/src/elf/diffusion.py
+index a7fdadb..5d69ce9 100644
+--- a/src/elf/diffusion.py
++++ b/src/elf/diffusion.py
+@@ -50,7 +50,7 @@ def add_noise(
+     t: float = DEFAULT_NOISE_T,
+     rng: np.random.Generator | None = None,
+ ) -> NDArray[np.float32]:
+-    """前向加噪: z_t = z_0 + σ(t) · ε, ε ~ N(0, I)
++    """前向加噪: z_t = z_0 + σ(t) · ε, ε ~ N(0, I/d)
  
      Args:
-         ctx: 共享评测上下文。
-@@ -64,6 +67,9 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
-     n = index.ntotal
-     if n == 0:
-         raise RuntimeError("FAISS 索引为空,无法提取文档向量")
-+    # IVF 系列索引需要显式启用 DirectMap 才能 reconstruct
-+    if isinstance(index, faiss.IndexIVF):
-+        index.set_direct_map_type(faiss.DirectMap.Hashtable)
-     vectors = np.vstack([index.reconstruct(i) for i in range(n)]).astype(np.float32)
-     ids = list(ctx.retriever._indexer.doc_ids)  # type: ignore[attr-defined]
-     if len(ids) != n:
-@@ -72,10 +78,16 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
+         z_0: 干净向量。shape (d,) 或 (n, d)。
+@@ -64,6 +64,13 @@ def add_noise(
+         ValueError: t 不在 [0, 1] 范围内。
+         ValueError: z_0 不是 float32 数组。
  
++    Notes:
++        噪声方差按维度归一 (ε ~ N(0, I/d), d=z_0 最后一维):
++        输入是单位向量 (每维方差 1/d), 若用全空间高斯 ε ~ N(0, I),
++        在 768 维下噪声总能量为信号能量的 d 倍 (noise_t=0.3 时约 69 倍),
++        加噪后向量几乎完全被噪声淹没, 任何去噪都无法恢复原始方向
++        (issue #35)。除以 √d 后噪声能量 = t², 与信号能量同量级。
++
+     Examples:
+         >>> z_0 = np.random.randn(768).astype(np.float32)
+         >>> z_0 /= np.linalg.norm(z_0)
+@@ -80,7 +87,10 @@ def add_noise(
+     if rng is None:
+         rng = np.random.default_rng()
  
- def _cache_key(
--    dataset: str, sample: int | None, nlist: int, encoder: str
-+    dataset: str, method: str, sample: int | None, nlist: int, encoder: str
- ) -> dict[str, object]:
-     """文档向量缓存的参数指纹。"""
--    return {"dataset": dataset, "sample": sample, "nlist": nlist, "encoder": encoder}
-+    return {
-+        "dataset": dataset,
-+        "method": method,
-+        "sample": sample,
-+        "nlist": nlist,
-+        "encoder": encoder,
-+    }
+-    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32)
++    dim = z_0.shape[-1]
++    # 噪声方差按维度归一: scale = 1/√d, 保持 float32 运算
++    scale = np.float32(1.0 / np.sqrt(dim))
++    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32) * scale
+     z_t = z_0 + sigma(t) * eps
  
+     logger.debug("add_noise: t=%.2f, shape=%s", t, z_0.shape)
+diff --git a/tests/test_elf_diffusion.py b/tests/test_elf_diffusion.py
+index 531b27d..6dbe1d2 100644
+--- a/tests/test_elf_diffusion.py
++++ b/tests/test_elf_diffusion.py
+@@ -72,12 +72,12 @@ class TestAddNoise:
+         assert np.allclose(z_t, z_0, atol=1e-6)
  
- def _cache_paths(cache_dir: Path) -> tuple[Path, Path, Path]:
-@@ -125,24 +137,31 @@ def _save_cached_vectors(
+     def test_t_one_full_noise(self) -> None:
+-        """t=1 时输出与输入显著不同。"""
++        """t=1 时输出与输入显著不同(范数距离 ≈ 1, 即噪声能量与信号同量级)。"""
+         z_0 = np.random.randn(768).astype(np.float32)
+         z_0 /= np.linalg.norm(z_0)
+         z_t = add_noise(z_0, t=1.0, rng=np.random.default_rng(42))
+-        # 加噪后不再是单位范数
+-        assert not np.allclose(z_t, z_0, atol=0.5)
++        # 修正噪声尺度后 t=1 的噪声能量 = 信号能量, 范数距离 ≈ 1
++        assert np.linalg.norm(z_t - z_0) > 0.5
  
+     def test_noise_level_increasing(self) -> None:
+         """t 越大，噪声水平越高（与原始向量的距离越大）。"""
+@@ -100,12 +100,13 @@ class TestAddNoise:
+         assert np.allclose(z_t1, z_t2, atol=1e-6)
  
- def _prepare_docs(
--    dataset: str, sample: int | None, nlist: int, encoder: str, seed: int
-+    dataset: str,
-+    method: str,
-+    sample: int | None,
-+    nlist: int,
-+    encoder: str,
-+    seed: int,
- ) -> tuple[BenchmarkContext, np.ndarray, list[str]]:
--    """构建评测上下文,返回 (ctx, doc_vectors, doc_ids)。
-+    """构建指定链路的评测上下文,返回 (ctx, doc_vectors, doc_ids)。
+     def test_different_seed_different_noise(self) -> None:
+-        """不同种子产生不同噪声。"""
++        """不同种子产生不同噪声(范数距离显著)。"""
+         z_0 = np.random.randn(768).astype(np.float32)
+         z_0 /= np.linalg.norm(z_0)
+         z_t1 = add_noise(z_0.copy(), t=0.5, rng=np.random.default_rng(42))
+         z_t2 = add_noise(z_0.copy(), t=0.5, rng=np.random.default_rng(99))
+-        assert not np.allclose(z_t1, z_t2, atol=0.1)
++        # 修正噪声尺度后单元素差异很小, 用范数距离判定噪声不同
++        assert np.linalg.norm(z_t1 - z_t2) > 0.1
  
-     优先复用磁盘缓存跳过文档编码;未命中时编码一次并落盘。
-+    缓存按 (dataset, method, sample, nlist, encoder) 区分。
-     """
-     cache_dir = Path("experiments/outputs") / dataset / "cache"
--    params = _cache_key(dataset, sample, nlist, encoder)
-+    params = _cache_key(dataset, method, sample, nlist, encoder)
-     cached = _load_cached_vectors(cache_dir, params)
-     if cached is not None:
-         vectors, ids = cached
-         ctx = _rebuild_context_from_vectors(
--            dataset, vectors, ids, nlist, encoder, seed, sample
-+            dataset, method, vectors, ids, nlist, encoder, seed, sample
+     def test_default_rng(self) -> None:
+         """默认 rng=None 时不应报错。"""
+diff --git a/tests/test_elf_pipeline.py b/tests/test_elf_pipeline.py
+index c1ed209..4e17c49 100644
+--- a/tests/test_elf_pipeline.py
++++ b/tests/test_elf_pipeline.py
+@@ -276,7 +276,7 @@ class TestELFPipeline:
+         assert np.allclose(v1, v2, atol=1e-5)
+ 
+     def test_different_seed_different(self) -> None:
+-        """不同种子产生不同输出。"""
++        """不同种子产生不同输出(范数距离显著)。"""
+         pipe = ELFPipeline(device="cpu")
+         v1 = pipe.enhance(
+             "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(42)
+@@ -284,7 +284,8 @@ class TestELFPipeline:
+         v2 = pipe.enhance(
+             "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(99)
          )
-         return ctx, vectors, ids
+-        assert not np.allclose(v1, v2, atol=0.1)
++        # 修正噪声尺度后单元素差异小, 用范数距离判定输出不同
++        assert np.linalg.norm(v1 - v2) > 0.05
  
-     ctx = build_benchmark_context(
-         dataset=dataset,
-+        method=method,
-         encoder_name=encoder,
-         index_nlist=nlist,
-         seed=seed,
-@@ -155,6 +174,7 @@ def _prepare_docs(
+     # ── 不同参数 ───────────────────────────
  
- def _rebuild_context_from_vectors(
-     dataset: str,
-+    method: str,
-     vectors: np.ndarray,
-     ids: list[str],
-     nlist: int,
-@@ -162,7 +182,10 @@ def _rebuild_context_from_vectors(
-     seed: int,
-     sample: int | None,
- ) -> BenchmarkContext:
--    """用缓存的文档向量重建索引与上下文(跳过耗时编码)。"""
-+    """用缓存的文档向量重建索引与上下文(跳过耗时编码)。
-+
-+    按 method 重建对应的编码器:baseline → BGE;elf → ELFPipeline。
-+    """
-     set_seed(seed)
-     data = load_dataset(dataset)
- 
-@@ -180,12 +203,22 @@ def _rebuild_context_from_vectors(
-         )
-         logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
- 
--    encoder_obj = BaselineEncoder(model_name=encoder)
-+    if method == METHOD_ELF:
-+        elf_pipeline = ELFPipeline()
-+        encoder_obj: BaselineEncoder | ELFPipeline = elf_pipeline
-+    else:
-+        encoder_obj = BaselineEncoder(model_name=encoder)
-+        elf_pipeline = None
-     indexer = FAISSIndexer(dimension=vectors.shape[1], nlist=nlist)
-     indexer.build(vectors, ids)
-     retriever = Retriever(indexer)
-     return BenchmarkContext(
--        dataset=dataset, data=data, encoder=encoder_obj, retriever=retriever
-+        dataset=dataset,
-+        method=method,
-+        data=data,
-+        encoder=encoder_obj,
-+        retriever=retriever,
-+        elf_pipeline=elf_pipeline,
-     )
- 
- 
-@@ -222,6 +255,21 @@ def _encode_queries_elf(
-     }
- 
- 
-+def _encode_queries_elf_raw(
-+    ctx: BenchmarkContext, query_ids: list[str]
-+) -> dict[str, np.ndarray]:
-+    """ELF 编码器原始输出(不增强): 仅 T5 编码 + 投影, 跳过加噪/去噪。
-+
-+    用于区分"编码空间错位"与"扩散破坏":若原始输出与文档向量已接近
-+    正交, 则根因在编码器空间, 与扩散参数无关。
-+    """
-+    if ctx.elf_pipeline is None:
-+        ctx.elf_pipeline = ELFPipeline()
-+    return {
-+        qid: ctx.elf_pipeline.encode(ctx.data.queries[qid]) for qid in query_ids
-+    }
-+
-+
- def _topk_from_retriever(
-     ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K
- ) -> list[str]:
-@@ -253,10 +301,21 @@ def _analyze_group(
-     id_to_idx: dict[str, int],
-     query_ids: list[str],
-     qvecs: dict[str, np.ndarray],
--    base_qvecs: dict[str, np.ndarray] | None,
--    label: str,
-+    base_qvecs: dict[str, np.ndarray] | None = None,
-+    baseline_top10: dict[str, list[str]] | None = None,
- ) -> dict[str, float]:
--    """计算一组查询向量的诊断指标。"""
-+    """计算一组查询向量的诊断指标。
-+
-+    Args:
-+        ctx: 该链路自己的评测上下文（文档向量与该链路同空间）。
-+        doc_vectors: 该链路的文档向量（与 ctx 的索引一致）。
-+        id_to_idx: doc_id → 文档向量行号映射。
-+        query_ids: 查询 ID 列表。
-+        qvecs: 本组查询向量。
-+        base_qvecs: baseline(BGE) 查询向量,提供时计算 shift 扰动指标。
-+        baseline_top10: baseline 的 top10 检索结果 {qid: doc_ids},
-+                        提供时计算与 baseline 的重叠率。
-+    """
-     avg_sims: list[float] = []
-     top10_sims: list[float] = []
-     overlaps: list[float] = []
-@@ -271,20 +330,22 @@ def _analyze_group(
-         top10_sims.append(_topk_sim(doc_vectors, id_to_idx, qvec, top10_ids))
- 
-         if base_qvecs is not None:
--            overlaps.append(_overlap(_topk_from_retriever(ctx, base_qvecs[qid]), top10_ids))
-             base_vec = base_qvecs[qid]
-             cos = float(np.dot(qvec, base_vec) / (np.linalg.norm(qvec) * np.linalg.norm(base_vec)))
-             shifts_cos.append(cos)
-             shifts_l2.append(float(np.linalg.norm(qvec - base_vec)))
-+        if baseline_top10 is not None:
-+            overlaps.append(_overlap(baseline_top10[qid], top10_ids))
- 
-     result: dict[str, float] = {
-         "query_doc_sim": float(np.mean(avg_sims)),
-         "query_doc_top10_sim": float(np.mean(top10_sims)),
-     }
-     if base_qvecs is not None:
--        result["overlap_with_baseline"] = float(np.mean(overlaps))
-         result["shift_cos"] = float(np.mean(shifts_cos))
-         result["shift_l2"] = float(np.mean(shifts_l2))
-+    if baseline_top10 is not None:
-+        result["overlap_with_baseline"] = float(np.mean(overlaps))
-     result["n_queries"] = float(len(query_ids))
-     return result
- 
-@@ -308,6 +369,12 @@ def _build_report(
-         f"| baseline | — | {baseline_stats['query_doc_sim']:.4f} | "
-         f"{baseline_stats['query_doc_top10_sim']:.4f} | 1.0000 |"
-     )
-+    if "elf-raw" in elf_stats:
-+        s = elf_stats["elf-raw"]
-+        lines.append(
-+            f"| elf-raw | 不增强(仅编码) | {s['query_doc_sim']:.4f} | "
-+            f"{s['query_doc_top10_sim']:.4f} | {s['overlap_with_baseline']:.4f} |"
-+        )
-     for p in elf_params:
-         cid = str(p["id"])
-         s = elf_stats[cid]
-@@ -324,6 +391,11 @@ def _build_report(
-         "| 组 | 参数 | shift_cos(越高越接近原向量) | shift_l2 |",
-         "|---|---:|---:|---:|",
-     ]
-+    if "elf-raw" in elf_stats:
-+        s = elf_stats["elf-raw"]
-+        lines.append(
-+            f"| elf-raw | 不增强(仅编码) | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |"
-+        )
-     for p in elf_params:
-         cid = str(p["id"])
-         s = elf_stats[cid]
-@@ -336,6 +408,8 @@ def _build_report(
-         "",
-         "## 3. 速读指引",
-         "",
-+        "- **elf-raw 的 query_doc_sim 已接近 0**: 根因是编码器向量空间错位"
-+        "(ELF/T5 投影空间 vs BGE 文档空间), 与扩散参数无关。",
-         "- **query_doc_sim 显著低于 baseline**:增强把查询向量推离了文档分布,"
-         "两条链路的向量空间不对齐。",
-         "- **overlap_with_baseline 高但指标差**:问题不在检索,而在相关文档排序/向量本身。",
-@@ -382,34 +456,59 @@ def _main() -> int:
-     logger.info("诊断开始: dataset=%s, sample=%d, seed=%d", dataset, sample, seed)
-     t0 = time.perf_counter()
- 
--    ctx, doc_vectors, doc_ids = _prepare_docs(
-+    # 双链路各自独立构建(issue #33): baseline → BGE 文档库;
-+    # elf → ELF 文档库, 查询与文档同空间, 反映修复后的真实对齐度
-+    base_ctx, base_vectors, base_ids = _prepare_docs(
-         dataset=dataset,
-+        method=METHOD_BASELINE,
-         sample=sample,
-         nlist=config.index_nlist,
-         encoder=config.encoder,
-         seed=seed,
-     )
--    id_to_idx = {did: i for i, did in enumerate(doc_ids)}
--    query_ids = sorted(ctx.data.queries.keys())
--    logger.info("查询数: %d, 文档数: %d", len(query_ids), len(doc_ids))
--
--    # baseline 查询向量(作为 ELF 组的对照)
--    base_qvecs = _encode_queries_baseline(ctx, query_ids)
-+    elf_ctx, elf_vectors, elf_ids = _prepare_docs(
-+        dataset=dataset,
-+        method=METHOD_ELF,
-+        sample=sample,
-+        nlist=config.index_nlist,
-+        encoder=config.encoder,
-+        seed=seed,
-+    )
-+    query_ids = sorted(base_ctx.data.queries.keys())
-+    logger.info("查询数: %d, 文档数: baseline=%d / elf=%d",
-+                len(query_ids), len(base_ids), len(elf_ids))
-+
-+    # baseline 查询向量与其 top10 检索结果(作为 ELF 组的对照)
-+    base_qvecs = _encode_queries_baseline(base_ctx, query_ids)
-+    base_id_to_idx = {did: i for i, did in enumerate(base_ids)}
-+    baseline_top10 = {
-+        qid: _topk_from_retriever(base_ctx, base_qvecs[qid]) for qid in query_ids
-+    }
-     baseline_stats = _analyze_group(
--        ctx, doc_vectors, id_to_idx, query_ids, base_qvecs, None, "baseline"
-+        base_ctx, base_vectors, base_id_to_idx, query_ids, base_qvecs
-     )
-     logger.info("baseline 诊断完成: query_doc_sim=%.4f", baseline_stats["query_doc_sim"])
- 
-+    # ELF 链路(文档为 ELF 编码, 与查询同空间)
-+    elf_id_to_idx = {did: i for i, did in enumerate(elf_ids)}
-     elf_stats: dict[str, dict[str, float]] = {}
-+    # ELF 编码器原始输出对照(不增强): 区分"编码空间错位"与"扩散破坏"
-+    logger.info("分析 elf-raw: ELF 编码器原始输出(不加噪/不去噪)")
-+    raw_qvecs = _encode_queries_elf_raw(elf_ctx, query_ids)
-+    elf_stats["elf-raw"] = _analyze_group(
-+        elf_ctx, elf_vectors, elf_id_to_idx, query_ids,
-+        raw_qvecs, base_qvecs, baseline_top10,
-+    )
-     for params in config.elf_param_list:
-         cid = str(params["id"])
-         steps = int(params["steps"])
-         noise_t = float(params["noise_t"])
-         cfg_scale = float(params["cfg_scale"])
-         logger.info("分析 %s: steps=%d, noise_t=%.2f, cfg_scale=%.1f", cid, steps, noise_t, cfg_scale)
--        elf_qvecs = _encode_queries_elf(ctx, query_ids, steps, noise_t, cfg_scale, seed)
-+        elf_qvecs = _encode_queries_elf(elf_ctx, query_ids, steps, noise_t, cfg_scale, seed)
-         elf_stats[cid] = _analyze_group(
--            ctx, doc_vectors, id_to_idx, query_ids, elf_qvecs, base_qvecs, cid
-+            elf_ctx, elf_vectors, elf_id_to_idx, query_ids,
-+            elf_qvecs, base_qvecs, baseline_top10,
-         )
- 
-     report_md = _build_report(
-@@ -420,7 +519,7 @@ def _main() -> int:
-         "sample": sample,
-         "seed": seed,
-         "n_queries": len(query_ids),
--        "n_docs": len(doc_ids),
-+        "n_docs": {"baseline": len(base_ids), "elf": len(elf_ids)},
-         "baseline": baseline_stats,
-         "elf_groups": elf_stats,
-         "elf_params": config.elf_param_list,
-diff --git a/html/elf-root-cause-analysis.html b/html/elf-root-cause-analysis.html
-new file mode 100644
-index 0000000..ffeb25e
---- /dev/null
-+++ b/html/elf-root-cause-analysis.html
-@@ -0,0 +1,364 @@
-+<!DOCTYPE html>
-+<html lang="zh-CN">
-+<head>
-+<meta charset="UTF-8">
-+<meta name="viewport" content="width=device-width, initial-scale=1.0">
-+<title>ELF 增强链路系统性落后根因分析报告</title>
-+<style>
-+  :root {
-+    --bg: #f7f8fa;
-+    --card: #ffffff;
-+    --ink: #1f2328;
-+    --muted: #57606a;
-+    --accent: #0969da;
-+    --bad: #cf222e;
-+    --warn: #9a6700;
-+    --ok: #1a7f37;
-+    --border: #d0d7de;
-+    --code-bg: #f6f8fa;
-+  }
-+  * { box-sizing: border-box; }
-+  body {
-+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
-+    line-height: 1.7;
-+  }
-+  header {
-+    background: linear-gradient(135deg, #0d1117, #161b22);
-+    color: #e6edf3; padding: 40px 24px 32px; text-align: center;
-+  }
-+  header h1 { margin: 0 0 8px; font-size: 26px; }
-+  header p { margin: 4px 0; color: #8b949e; font-size: 14px; }
-+  .verdict {
-+    display: inline-block; margin-top: 12px; padding: 6px 16px;
-+    background: #cf222e; color: #fff; border-radius: 999px;
-+    font-weight: 600; font-size: 14px;
-+  }
-+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
-+  section {
-+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-+    padding: 24px 28px; margin: 20px 0;
-+  }
-+  h2 {
-+    margin: 0 0 16px; font-size: 20px; padding-bottom: 10px;
-+    border-bottom: 2px solid var(--accent);
-+  }
-+  h3 { margin: 22px 0 10px; font-size: 16px; color: var(--accent); }
-+  p { margin: 10px 0; }
-+  table {
-+    width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px;
-+  }
-+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
-+  th { background: #f0f3f6; font-weight: 600; }
-+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-+  code {
-+    font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
-+    background: var(--code-bg); padding: 1px 6px; border-radius: 4px;
-+    font-size: 13px; color: #24292f;
-+  }
-+  pre {
-+    background: #0d1117; color: #e6edf3; border-radius: 8px;
-+    padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.55;
-+  }
-+  pre code { background: none; color: inherit; padding: 0; }
-+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-+  .b-ok { background: #dafbe1; color: var(--ok); }
-+  .b-bad { background: #ffebe9; color: var(--bad); }
-+  .b-warn { background: #fff8c5; color: var(--warn); }
-+  .key-finding {
-+    border-left: 4px solid var(--bad); background: #fff5f5;
-+    padding: 12px 16px; border-radius: 6px; margin: 14px 0;
-+  }
-+  .step { margin: 10px 0 10px 22px; }
-+  ul { padding-left: 22px; }
-+  li { margin: 6px 0; }
-+  .muted { color: var(--muted); font-size: 13px; }
-+  .file-ref { font-size: 13px; color: var(--muted); margin-top: -8px; }
-+  @media (max-width: 640px) {
-+    section { padding: 16px; }
-+    table { font-size: 12px; }
-+  }
-+</style>
-+</head>
-+<body>
-+
-+<header>
-+  <h1>ELF 增强链路系统性落后根因分析</h1>
-+  <p>项目: diffusion-rag &nbsp;·&nbsp; 数据集: nfcorpus &nbsp;·&nbsp; 日期: 2026-08-03</p>
-+  <span class="verdict">已确认: ELF 编码器原始输出即与 BGE 文档向量正交(余弦 -0.028), 根因是向量空间错位, 与扩散参数无关</span>
-+</header>
-+
-+<main>
-+
-+<!-- ============ 1. 现象 ============ -->
-+<section>
-+  <h2>1. 现象: 12 组 ELF 参数全面落后 baseline</h2>
-+  <p>参数网格评测(1 baseline + 12 组 ELF 参数组合, <code>experiments/configs/param_grid.yaml</code>)中,
-+  所有 ELF 组的指标以几乎相同的幅度系统性落后 baseline 约 <strong>80%</strong>, 且与扩散参数
-+  (steps / noise_t / cfg_scale) 几乎无关:</p>
-+
-+  <table>
-+    <thead>
-+      <tr><th>组</th><th>steps</th><th>noise_t</th><th>cfg_scale</th><th class="num">recall@10</th><th class="num">mrr</th><th class="num">ndcg@10</th></tr>
-+    </thead>
-+    <tbody>
-+      <tr><td><strong>baseline</strong></td><td>—</td><td>—</td><td>—</td><td class="num"><strong>0.512</strong></td><td class="num"><strong>0.729</strong></td><td class="num"><strong>0.720</strong></td></tr>
-+      <tr><td>ELF-01 ~ ELF-12</td><td>1~4</td><td>0.3~0.6</td><td>1.0~3.0</td><td class="num">0.093~0.097</td><td class="num">0.129~0.142</td><td class="num">0.157~0.170</td></tr>
-+    </tbody>
-+  </table>
-+  <p class="muted">数据来源: <code>--sample 5</code> 评测(<code>experiments/outputs/nfcorpus/summary.csv</code>)。
-+  12 组 ELF 结果高度一致(recall@10 区间仅 0.093~0.097), 这是"系统性偏差"而非"参数敏感性"的典型特征。</p>
-+
-+  <div class="key-finding">
-+    <strong>关键观察:</strong> 12 组不同扩散参数的 ELF 指标几乎完全相同 → 扩散增强(加噪/去噪/CFG)
-+    不是决定指标的因素; 决定因素在 ELF 链路的<em>上游</em>——查询向量本身。
-+  </div>
-+</section>
-+
-+<!-- ============ 2. 诊断证据 ============ -->
-+<section>
-+  <h2>2. 诊断证据: 查询向量与文档向量接近正交</h2>
-+  <p>通过 <code>experiments/diagnose_elf.py</code>(输出 <code>experiments/outputs/nfcorpus/diagnosis/</code>)
-+  对同一批查询计算两类向量与文档库的相似度:</p>
-+
-+  <table>
-+    <thead>
-+      <tr><th>指标</th><th>baseline(BGE 查询)</th><th>ELF 原始编码(不增强)</th><th>ELF 增强查询(12 组)</th><th>含义</th></tr>
-+    </thead>
-+    <tbody>
-+      <tr>
-+        <td><code>query_doc_sim</code></td>
-+        <td class="num"><span class="badge b-ok">0.5165</span></td>
-+        <td class="num"><span class="badge b-bad">-0.0284</span></td>
-+        <td class="num"><span class="badge b-bad">-0.005 ~ -0.003</span></td>
-+        <td>查询向量与全部文档向量的平均内积(单位向量, 内积=余弦)</td>
-+      </tr>
-+      <tr>
-+        <td><code>query_doc_top10_sim</code></td>
-+        <td class="num"><span class="badge b-ok">0.6202</span></td>
-+        <td class="num"><span class="badge b-bad">0.0201</span></td>
-+        <td class="num"><span class="badge b-bad">0.039 ~ 0.040</span></td>
-+        <td>查询向量与其检索到的 top10 文档的平均内积</td>
-+      </tr>
-+      <tr>
-+        <td><code>overlap_with_baseline</code></td>
-+        <td class="num">1.0000</td>
-+        <td class="num"><span class="badge b-bad">0.0000</span></td>
-+        <td class="num"><span class="badge b-bad">0.0000</span></td>
-+        <td>top10 检索结果与 baseline 的重叠率(20 条 query 全部零重叠)</td>
-+      </tr>
-+      <tr>
-+        <td><code>shift_cos</code></td>
-+        <td class="num">—</td>
-+        <td class="num"><span class="badge b-bad">-0.034</span></td>
-+        <td class="num"><span class="badge b-bad">-0.004 ~ -0.002</span></td>
-+        <td>相对 baseline 查询向量的余弦(1=一致, 0=正交, 负=反向)</td>
-+      </tr>
-+      <tr>
-+        <td><code>shift_l2</code></td>
-+        <td class="num">—</td>
-+        <td class="num"><span class="badge b-bad">1.438</span></td>
-+        <td class="num"><span class="badge b-bad">1.415 ~ 1.417</span></td>
-+        <td>相对 baseline 查询向量的 L2 距离(单位向量最大 2.0, 随机期望 √2≈1.414)</td>
-+      </tr>
-+    </tbody>
-+  </table>
-+
-+  <div class="key-finding">
-+    <strong>决定性证据(elf-raw 实验):</strong> 用 <code>ELFPipeline.encode()</code>(跳过加噪/去噪,
-+    仅 T5 编码 + 投影)得到的原始查询向量, 与文档向量的平均余弦为 <strong>-0.0284</strong>——
-+    <em>不经过任何扩散处理, ELF 编码器输出已经与 BGE 文档向量正交</em>。
-+    因此根因是<strong>编码器向量空间错位</strong>, 与扩散增强无关; 12 组参数的
-+    <code>query_doc_sim</code> 差异不足 0.002 也印证了这一点。
-+  </div>
-+</section>
-+
-+<!-- ============ 3. 根因分析 ============ -->
-+<section>
-+  <h2>3. 根因分析(三层)</h2>
-+
-+  <h3>3.1 直接原因: 查询向量与文档向量不在同一向量空间</h3>
-+  <p>评测的双链路设计(计划 §2.2/§2.3, <code>docs/diffusion-rag-plan.md</code>)是
-+  <strong>"同一向量库, 仅替换查询编码"</strong>:</p>
-+  <ul>
-+    <li><strong>文档侧</strong>(两条链路共享): BGE 编码器 <code>BAAI/bge-base-en-v1.5</code> → 768-dim;</li>
-+    <li><strong>baseline 查询侧</strong>: 同一个 BGE 编码器 → 768-dim, 与文档同空间, 内积正常(0.466);</li>
-+    <li><strong>ELF 查询侧</strong>: <code>ELFNativeEncoder</code>(T5-small + 投影层) → 768-dim, 但这是
-+      <em>另一个独立训练的向量空间</em>。</li>
-+  </ul>
-+  <p>两个空间虽然<strong>维度相同(768)</strong>, 但 BGE 与 T5 投影是各自独立训练的, 没有对齐约束。
-+  单位向量在不同空间中点积期望接近 0——这正是 0.007 的来源。计划文档中
-+  "向量维度: 768(与 ELF 输出对齐)"(plan §2.2)隐含了<strong>"同维即对齐"</strong>的假设, 该假设被数据否定。</p>
-+
-+  <h3>3.2 深层原因一: 扩散增强使用"占位速度场", 无真实 denoiser</h3>
-+  <p>即使空间错位的问题不存在, 当前增强链路也<strong>没有接入真实训练过的去噪模型</strong>。
-+  <code>ELFPipeline</code> 的默认速度场是 <code>_default_model_fn</code>(向原点收缩的简易近似,
-+  代码注释明确写着"当真实扩散模型不可用时回退使用"), 且噪声调度 <code>σ(t)=t</code> 在
-+  <code>noise_t=0.3~0.6</code> 下会注入相当强度的噪声。去噪输出与原始向量相关性极低
-+  (<code>shift_cos=0.026</code>), 增强并未产生"语义增强", 而是把向量推离了原始方向。</p>
-+
-+  <h3>3.3 深层原因二: 扩散噪声尺度与向量分布不匹配</h3>
-+  <p>即使速度场正确, <code>add_noise</code> 用 <code>z_t = z_0 + σ(t)·ε</code> 加噪, 其中
-+  <code>σ(t)=t</code>。对单位向量, <code>noise_t=0.5</code> 意味着噪声能量为信号能量的 50%,
-+  向量已严重污染; 若去噪不精确(见 3.2), 输出将远离 <code>z_0</code>。这也是
-+  <code>shift_l2≈1.40</code>(接近两个随机单位向量的期望距离)的原因。</p>
-+</section>
-+
-+<!-- ============ 4. 相关代码 ============ -->
-+<section>
-+  <h2>4. 相关代码</h2>
-+
-+  <h3>4.1 查询侧: ELF 增强链路(编码 → 加噪 → 去噪 → 归一化)</h3>
-+  <p class="file-ref">src/elf/pipeline.py · ELFPipeline.enhance() L125-176</p>
-+  <pre><code>def enhance(self, text, steps=2, noise_t=DEFAULT_NOISE_T, cfg_scale=2.0, rng=None):
-+    # Step 1: 编码 —— ELFNativeEncoder(T5-small → 投影 768-dim)
-+    z_0 = self.encoder.encode(text)
-+    # Step 2: 加噪 —— z_t = z_0 + σ(t)·ε
-+    z_t = add_noise(z_0, t=noise_t, rng=rng)
-+    # Step 3: Velocity 级 CFG 去噪(默认速度场 = 向原点收缩的占位实现)
-+    cond_fn = self._model_fn_cond or _default_model_fn        # ← L152
-+    uncond_fn = self._model_fn_uncond or _default_model_fn    # ← L153
-+    z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=steps,
-+                             cfg_scale=cfg_scale, t_start=noise_t)
-+    # Step 4: L2 归一化
-+    z_out = z_out / np.linalg.norm(z_out)</code></pre>
-+
-+  <p class="file-ref">src/elf/pipeline.py · _default_model_fn L35-51 — 占位速度场, 未接真实 denoiser</p>
-+  <pre><code>def _default_model_fn(z, t):
-+    """简易去噪速度场: 朝原点收缩。当真实扩散模型不可用时回退使用。"""
-+    noise_scale = sigma(t)
-+    if noise_scale &gt; 1e-8:
-+        return -z / noise_scale          # 朝原点收缩, 与查询内容无关
-+    return np.zeros_like(z)</code></pre>
-+
-+  <h3>4.2 噪声调度与去噪推进</h3>
-+  <p class="file-ref">src/elf/diffusion.py · sigma L31-40 / add_noise L48-87 / denoise_with_cfg L157-233</p>
-+  <pre><code>def sigma(t):           # L31  线性噪声调度
-+    return t
-+
-+def add_noise(z_0, t, rng):            # L48
-+    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32)
-+    z_t = z_0 + sigma(t) * eps         # 对单位向量, t=0.5 即 50% 噪声能量
-+    return z_t
-+
-+# denoise_with_cfg: 每步 v_cfg = v_uncond + cfg_scale·(v_cond - v_uncond), 再 z += v·Δt</code></pre>
-+
-+  <h3>4.3 查询编码: ELF 原生编码器(T5 空间)</h3>
-+  <p class="file-ref">src/elf/native_encoder.py · _encode_torch L158-199</p>
-+  <pre><code>outputs = self._t5(**inputs)                          # T5-small, hidden=512
-+pooled = masked_hidden.sum(1) / mask.sum(1)           # mean pooling → 512
-+projected = self._projection(pooled)                  # Linear 512→768
-+normalized = torch.nn.functional.normalize(projected) # L2 归一化
-+# ↑ 输出在"T5 投影空间", 与 BGE 文档向量(另一个空间)点积≈0</code></pre>
-+
-+  <h3>4.4 文档侧: BGE 编码(双链路共享)</h3>
-+  <p class="file-ref">src/baseline/encoder.py · BaselineEncoder.encode / encode_batch</p>
-+  <pre><code>vec = self._model.encode(text, normalize_embeddings=True)  # BAAI/bge-base-en-v1.5</code></pre>
-+  <p class="file-ref">src/baseline/benchmark.py · run_benchmark L179-227 — 文档准备与查询链路切换</p>
-+  <pre><code># 文档侧恒用 BaselineEncoder(BGE), 两条链路共享同一份索引
-+encoder = BaselineEncoder(model_name=encoder_name)
-+doc_vectors = encoder.encode_batch(doc_texts)        # L116
-+indexer.build(doc_vectors, doc_ids)
-+
-+# 查询侧按 method 切换: baseline → BGE;  elf → ELFPipeline(T5+扩散)
-+if method == METHOD_ELF:
-+    elf_pipeline = ELFPipeline()
-+    query_encoder = _elf_query_encode                 # enhance() 输出
-+else:
-+    query_encoder = encoder.encode                    # BGE 输出</code></pre>
-+</section>
-+
-+<!-- ============ 5. 验证结果 ============ -->
-+<section>
-+  <h2>5. 验证结果: 错位发生在编码层, 已排除扩散因素</h2>
-+  <p>针对 3.1/3.2 的分歧, 执行了 <strong>elf-raw 实验</strong>(<code>ELFPipeline.encode()</code>,
-+  只做 T5 编码 + 投影, 完全跳过加噪/去噪):</p>
-+  <table>
-+    <thead>
-+      <tr><th>查询链路</th><th class="num">query_doc_sim</th><th>结论</th></tr>
-+    </thead>
-+    <tbody>
-+      <tr><td>baseline(BGE)</td><td class="num">0.5165</td><td>同空间, 正常</td></tr>
-+      <tr><td>ELF 原始编码(不增强)</td><td class="num">-0.0284</td><td><span class="badge b-bad">已与文档正交 → 编码空间错位</span></td></tr>
-+      <tr><td>ELF 增强(12 组)</td><td class="num">-0.005 ~ -0.003</td><td>在错位空间内小幅扰动, 无修复能力</td></tr>
-+    </tbody>
-+  </table>
-+  <div class="key-finding">
-+    <strong>结论:</strong> 根因是 ELF 编码器(T5-small + 投影)输出空间与 BGE 文档空间
-+    <strong>不对齐</strong>, 与扩散增强(steps / noise_t / cfg_scale)无关。
-+    12 组参数的指标与相似度几乎完全一致(差异 &lt; 0.002)是该结论的直接佐证。
-+  </div>
-+  <p class="muted">注: 早期 sample=1 诊断中 <code>overlap_with_baseline=1.0</code> 是检索池不足
-+  (仅 5 篇文档全部被返回)的假象; sample=20(542 篇文档)下该列为 0.0, 具备有效区分度。
-+  诊断脚本已固化 elf-raw 对照(<code>experiments/diagnose_elf.py</code>), 后续可直接复现。</p>
-+</section>
-+
-+<!-- ============ 6. 解决办法 ============ -->
-+<section>
-+  <h2>6. 可能的解决办法(按成本从低到高)</h2>
-+
-+  <h3>方案 A: 先验证, 再对症下药(必做, 零成本)</h3>
-+  <p class="step">执行第 5 节实验, 确认错位层。后续方案按实验结果选择。</p>
-+
-+  <h3>方案 B: 文档侧也使用 ELF 编码器(若错位在编码层, 首选)</h3>
-+  <p class="step">把文档向量库也换成 <code>ELFNativeEncoder</code> 编码, 使查询与文档落在同一
-+  (ELF) 空间, 双链路各自"自洽":</p>
-+  <ul>
-+    <li><strong>改动点</strong>: <code>run_benchmark</code> 文档准备阶段按 method 切换编码器(当前恒用 BGE);
-+      或为 ELF 链路单独建索引(放弃"双链路共享索引"计划假设);</li>
-+    <li><strong>代价</strong>: 全库文档重新编码(CPU 上 nfcorpus 542 篇约 8 分钟, 有缓存机制可复用);
-+      文档量大的数据集耗时显著, 可配合批量编码 <code>encode_batch</code>;</li>
-+    <li><strong>效果</strong>: 保证 ELF 链路检索有效(相似度从 0.007 回到正常水平), 指标才能反映
-+      "增强"的真实效果。</li>
-+  </ul>
-+
-+  <h3>方案 C: 接入真实扩散 denoiser, 校准噪声调度(若错位在扩散层)</h3>
-+  <ul>
-+    <li>用训练过的 velocity/score 模型替换 <code>_default_model_fn</code> 占位实现
-+      (<code>ELFPipeline(model_fn_cond=..., model_fn_uncond=...)</code> 已预留注入接口);</li>
-+    <li>校准 <code>sigma(t)</code> 与 ELF 训练时一致, 或降低 <code>noise_t</code>(如 0.1~0.2)
-+      使去噪更易收敛; 增加 <code>steps</code> 验证 ODE 收敛性;</li>
-+    <li>检查 <code>denoise_with_cfg</code> 数值稳定性(dt 符号、t_start 推断)。</li>
-+  </ul>
-+
-+  <h3>方案 D: 使 ELF 输出空间与 BGE 对齐(若必须保持共享索引)</h3>
-+  <ul>
-+    <li>用 BGE 文档/查询向量作为监督目标, 微调 <code>_projection</code>(或加一层可学习对齐变换);
-+      ELF 增强在"已对齐"的 BGE 空间内进行;</li>
-+    <li>代价最高(需要训练数据/目标函数), 仅在双链路必须共享同一向量库且不能换文档编码时考虑。</li>
-+  </ul>
-+
-+  <h3>方案 E: 短期降噪实验(快速试错)</h3>
-+  <p class="step">若想快速确认扩散链路影响, 可临时把 <code>noise_t</code> 降到 0(等于不做扩散,
-+  只走 ELF 编码), 对比指标:
-+  <code>query_doc_sim</code> 若仍 ≈ 0.007 → 编码错位坐实, 直接转方案 B。</p>
-+</section>
-+
-+<!-- ============ 7. 附录 ============ -->
-+<section>
-+  <h2>7. 附录: 相关文件与命令</h2>
-+  <table>
-+    <thead><tr><th>文件</th><th>作用</th></tr></thead>
-+    <tbody>
-+      <tr><td><code>src/elf/pipeline.py</code></td><td>ELF 增强链路(encode → add_noise → denoise_with_cfg → normalize)</td></tr>
-+      <tr><td><code>src/elf/diffusion.py</code></td><td>噪声调度 σ(t)=t、前向加噪、Velocity CFG 去噪</td></tr>
-+      <tr><td><code>src/elf/native_encoder.py</code></td><td>ELF 原生编码器(T5-small + 512→768 投影, 查询侧)</td></tr>
-+      <tr><td><code>src/baseline/encoder.py</code></td><td>BGE 编码器(文档侧 + baseline 查询侧)</td></tr>
-+      <tr><td><code>src/baseline/benchmark.py</code></td><td>双链路评测: 文档恒用 BGE, 查询按 method 切换</td></tr>
-+      <tr><td><code>experiments/diagnose_elf.py</code></td><td>诊断脚本: query_doc_sim / top10_sim / overlap / shift</td></tr>
-+      <tr><td><code>experiments/outputs/nfcorpus/diagnosis/</code></td><td>本次诊断数据(diagnosis.json / diagnosis.md)</td></tr>
-+      <tr><td><code>docs/diffusion-rag-plan.md</code></td><td>项目计划(§2.2/§2.3 双链路设计, "768 对齐"假设来源)</td></tr>
-+    </tbody>
-+  </table>
-+  <h3>复现命令</h3>
-+  <pre><code># 评测(13 组: 1 baseline + 12 ELF)
-+py -m src.evaluation.orchestrator --config experiments/configs/param_grid.yaml \
-+    --dataset nfcorpus --sample 20
-+
-+# 诊断(输出 diagnosis.json / diagnosis.md)
-+py -m experiments.diagnose_elf --dataset nfcorpus --sample 20</code></pre>
-+</section>
-+
-+</main>
-+</body>
-+</html>
-diff --git a/src/baseline/benchmark.py b/src/baseline/benchmark.py
-index 103f3a4..6d5bc52 100644
---- a/src/baseline/benchmark.py
-+++ b/src/baseline/benchmark.py
-@@ -52,25 +52,30 @@ class BenchmarkContext:
- 
-     包含采样后的数据集、文档编码器与检索器，供 run_grid 的
-     baseline + 多组 ELF 复用，避免每组重复加载数据集、编码文档、
--    建索引与加载 ELF 模型（文档侧编码在两条链路上完全一致）。
-+    建索引与加载 ELF 模型。
- 
-     Attributes:
-         dataset: 上下文对应的数据集名称（用于 shared 模式下的一致性校验）。
-+        method: 上下文对应的检索链路（'baseline' / 'elf'）。
-         data: 采样后的数据集三元组。
--        encoder: 文档侧 BGE 编码器（同时用于 baseline 查询编码）。
-+        encoder: 文档侧编码器（baseline → BGE；elf → ELFPipeline），
-+                 baseline 查询编码也复用该实例。
-         retriever: 基于文档向量构建的检索器。
--        elf_pipeline: 惰性创建的 ELFPipeline，首个 ELF 组加载后复用。
-+        elf_pipeline: ELFPipeline（仅 method='elf' 时非 None），
-+                      文档编码与查询增强共用同一实例。
-     """
- 
-     dataset: str
-+    method: str
-     data: DatasetTriple
--    encoder: BaselineEncoder
-+    encoder: BaselineEncoder | ELFPipeline
-     retriever: Retriever
-     elf_pipeline: ELFPipeline | None = None
- 
- 
- def build_benchmark_context(
-     dataset: str = "nfcorpus",
-+    method: str = METHOD_BASELINE,
-     encoder_name: str = DEFAULT_ENCODER,
-     index_nlist: int = DEFAULT_INDEX_NLIST,
-     seed: int = DEFAULT_SEED,
-@@ -82,16 +87,29 @@ def build_benchmark_context(
-     全部文档 → 构建 FAISS 索引），抽出来以便参数网格的 13 组评测
-     只执行一次，其余组通过 run_benchmark(shared=ctx) 直接复用。
- 
-+    文档侧编码按 method 切换（issue #33）：
-+    - 'baseline': 用 BGE 编码器，查询/文档同处 BGE 空间；
-+    - 'elf':      用 ELFPipeline（T5 原生编码），查询/文档同处 ELF 空间，
-+                  ELF 链路自建索引，避免与 BGE 文档空间错位。
-+
-     Args:
-         dataset: 数据集名称。
--        encoder_name: 文档侧编码器名称。
-+        method: 检索链路，'baseline'（BGE 文档编码）或 'elf'（ELF 文档编码）。
-+        encoder_name: 文档侧编码器名称（仅 method='baseline' 生效）。
-         index_nlist: FAISS IVF 聚类中心数。
-         seed: 随机种子。
-         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
- 
-     Returns:
-         构建完成的 BenchmarkContext。
-+
-+    Raises:
-+        ValueError: method 不在 SUPPORTED_METHODS 中。
-     """
-+    if method not in SUPPORTED_METHODS:
-+        supported = ", ".join(SUPPORTED_METHODS)
-+        raise ValueError(f"不支持的链路 method='{method}'，支持: {supported}")
-+
-     set_seed(seed)
- 
-     data = load_dataset(dataset)
-@@ -112,18 +130,33 @@ def build_benchmark_context(
- 
-     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
- 
--    # 编码文档 + 建索引（双链路共享）
--    encoder = BaselineEncoder(model_name=encoder_name)
-+    # 编码文档 + 建索引（按 method 选择文档编码器, 查询与文档同空间）
-     doc_ids = sorted(data.corpus.keys())
-     doc_texts = [data.corpus[did] for did in doc_ids]
-+    logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
- 
--    logger.info("编码 %d 篇文档...", len(doc_texts))
--    doc_vectors = encoder.encode_batch(doc_texts)
-+    if method == METHOD_ELF:
-+        # ELF 链路: 文档与查询共用同一个 ELFPipeline(ELFNativeEncoder),
-+        # 输出同一 ELF 空间, 修复与 BGE 文档空间错位的问题 (issue #33)
-+        elf_pipeline = ELFPipeline()
-+        doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
-+        encoder: BaselineEncoder | ELFPipeline = elf_pipeline
-+    else:
-+        encoder = BaselineEncoder(model_name=encoder_name)
-+        doc_vectors = encoder.encode_batch(doc_texts)
-+        elf_pipeline = None
- 
-     indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
-     indexer.build(doc_vectors, doc_ids)
-     retriever = Retriever(indexer)
--    return BenchmarkContext(dataset=dataset, data=data, encoder=encoder, retriever=retriever)
-+    return BenchmarkContext(
-+        dataset=dataset,
-+        method=method,
-+        data=data,
-+        encoder=encoder,
-+        retriever=retriever,
-+        elf_pipeline=elf_pipeline,
-+    )
- 
- 
- def run_benchmark(
-@@ -183,6 +216,7 @@ def run_benchmark(
-     if shared is None:
-         ctx = build_benchmark_context(
-             dataset=dataset,
-+            method=method,
-             encoder_name=encoder_name,
-             index_nlist=index_nlist,
-             seed=seed,
-@@ -194,6 +228,10 @@ def run_benchmark(
-             raise ValueError(
-                 f"shared 上下文的数据集 '{ctx.dataset}' 与参数 dataset='{dataset}' 不一致"
-             )
-+        if ctx.method != method:
-+            raise ValueError(
-+                f"shared 上下文的链路 '{ctx.method}' 与参数 method='{method}' 不一致"
-+            )
-     data = ctx.data
-     encoder = ctx.encoder
-     retriever = ctx.retriever
-diff --git a/src/evaluation/orchestrator.py b/src/evaluation/orchestrator.py
-index c045d1f..6dcbbc2 100644
---- a/src/evaluation/orchestrator.py
-+++ b/src/evaluation/orchestrator.py
-@@ -171,12 +171,24 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
- 
-     rows: list[dict[str, object]] = []
- 
--    # 一次性构建共享上下文：加载数据集 + 采样 + 编码全部文档 + 建索引。
--    # 13 组评测（1 baseline + 12 ELF）复用同一份文档向量与索引，
--    # 避免每组重复编码文档（CPU 上每组约 8.5 分钟的重复计算）。
--    logger.info("[grid] 构建共享评测上下文 (加载数据集 + 编码文档 + 建索引)...")
--    ctx = build_benchmark_context(
-+    # 一次性构建双共享上下文(issue #33): 文档侧编码按 method 切换,
-+    # 查询与文档同空间, 修复 ELF 与 BGE 文档空间错位的问题。
-+    # baseline → BGE 文档库; elf → ELF 文档库(ELF 链路自建索引)。
-+    # 每条链路各自的 13 组(1 baseline + 12 ELF)复用同一份文档向量与索引,
-+    # 避免每组重复编码文档。
-+    logger.info("[grid] 构建共享评测上下文 (baseline: BGE 文档编码)...")
-+    baseline_ctx = build_benchmark_context(
-         dataset=config.dataset,
-+        method=METHOD_BASELINE,
-+        encoder_name=config.encoder,
-+        index_nlist=config.index_nlist,
-+        seed=config.seed,
-+        sample=effective_sample,
-+    )
-+    logger.info("[grid] 构建共享评测上下文 (elf: ELF 文档编码)...")
-+    elf_ctx = build_benchmark_context(
-+        dataset=config.dataset,
-+        method=METHOD_ELF,
-         encoder_name=config.encoder,
-         index_nlist=config.index_nlist,
-         seed=config.seed,
-@@ -186,7 +198,10 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
-     logger.info("[grid] 运行 Baseline 对照组")
-     rows.append(
-         _run_group(
--            config, method=METHOD_BASELINE, sample=effective_sample, shared=ctx
-+            config,
-+            method=METHOD_BASELINE,
-+            sample=effective_sample,
-+            shared=baseline_ctx,
-         )
-     )
- 
-@@ -204,7 +219,7 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
-                 method=METHOD_ELF,
-                 sample=effective_sample,
-                 elf_params=params,
--                shared=ctx,
-+                shared=elf_ctx,
-             )
-         )
- 
-diff --git a/tests/test_benchmark.py b/tests/test_benchmark.py
-index cb2ad27..41bacb2 100644
---- a/tests/test_benchmark.py
-+++ b/tests/test_benchmark.py
-@@ -14,7 +14,11 @@ import pytest
- from numpy.typing import NDArray
- 
- import src.baseline.benchmark as benchmark
--from src.baseline.benchmark import BenchmarkContext, run_benchmark
-+from src.baseline.benchmark import (
-+    BenchmarkContext,
-+    build_benchmark_context,
-+    run_benchmark,
-+)
- from src.config import METHOD_BASELINE, METHOD_ELF
- from src.evaluation.dataset import DatasetTriple
- 
-@@ -49,6 +53,12 @@ class TestRunBenchmark:
- 
-         self._elf_pipeline_mock = MagicMock()
-         self._elf_pipeline_mock.enhance.return_value = fixed_vec
-+        # ELF 模式文档编码走 pipeline.encoder.encode_batch, 返回 (n, 768) 数组
-+        elf_inner_encoder = MagicMock()
-+        elf_inner_encoder.encode_batch.side_effect = lambda texts, batch_size=32: np.tile(
-+            fixed_vec, (len(texts), 1)
-+        )
-+        self._elf_pipeline_mock.encoder = elf_inner_encoder
- 
-         patchers = [
-             patch("src.baseline.benchmark.load_dataset", return_value=_make_fake_data()),
-@@ -141,6 +151,7 @@ class TestRunBenchmark:
-         )
-         ctx = BenchmarkContext(
-             dataset="nfcorpus",
-+            method=METHOD_ELF,
-             data=_make_fake_data(),
-             encoder=self._doc_encoder,
-             retriever=retriever,
-@@ -164,6 +175,7 @@ class TestRunBenchmark:
-         """shared 上下文数据集与参数不一致时抛出 ValueError（防止写错输出目录）。"""
-         ctx = BenchmarkContext(
-             dataset="msmarco",
-+            method=METHOD_BASELINE,
-             data=_make_fake_data(),
-             encoder=self._doc_encoder,
-             retriever=MagicMock(),
-@@ -171,6 +183,32 @@ class TestRunBenchmark:
-         with pytest.raises(ValueError, match="不一致"):
-             run_benchmark(dataset="nfcorpus", output_dir=str(self._output_dir), shared=ctx)
- 
-+    # ── 文档编码按 method 切换 (issue #33) ─────
-+
-+    def test_build_context_baseline_docs_use_bge(self, tmp_path: Path) -> None:
-+        """method='baseline' 时文档用 BGE 编码, 不创建 ELFPipeline。"""
-+        ctx = build_benchmark_context(
-+            dataset="nfcorpus", method=METHOD_BASELINE, sample=2, index_nlist=2
-+        )
-+        assert ctx.method == METHOD_BASELINE
-+        assert ctx.elf_pipeline is None
-+        assert self._elf_pipeline_mock.enhance.call_count == 0
-+
-+    def test_build_context_elf_docs_use_elf_pipeline(self, tmp_path: Path) -> None:
-+        """method='elf' 时文档用 ELFPipeline 编码, 查询与文档同处 ELF 空间。"""
-+        with patch(
-+            "src.baseline.benchmark.ELFPipeline",
-+            return_value=self._elf_pipeline_mock,
-+        ) as factory:
-+            ctx = build_benchmark_context(
-+                dataset="nfcorpus", method=METHOD_ELF, sample=2, index_nlist=2
-+            )
-+        # 文档编码走 pipeline.encoder.encode_batch(ELF 空间), 而非 BGE
-+        assert self._elf_pipeline_mock.encoder.encode_batch.call_count == 1
-+        assert ctx.encoder is self._elf_pipeline_mock
-+        assert ctx.elf_pipeline is self._elf_pipeline_mock
-+        assert ctx.method == METHOD_ELF
-+
-     # ── 采样 / 参数校验 ───────────────────────
- 
-     def test_sample_limits_queries(self) -> None:
-diff --git a/tests/test_orchestrator.py b/tests/test_orchestrator.py
-index d295d6b..cfebc2b 100644
---- a/tests/test_orchestrator.py
-+++ b/tests/test_orchestrator.py
-@@ -186,13 +186,15 @@ class TestRunGrid:
-             METHOD_ELF,
-         ]
- 
--    def test_builds_context_once_and_shares_it(self, tmp_path: Path) -> None:
--        """共享上下文只构建一次，且透传给所有 run_benchmark 调用。"""
-+    def test_builds_context_once_per_method_and_shares_it(self, tmp_path: Path) -> None:
-+        """baseline/elf 各构建一次上下文,并按链路分别透传(issue #33)。"""
-         config = _make_config(tmp_path, n_groups=2)
-+        base_ctx = MagicMock()
-+        elf_ctx = MagicMock()
-         with (
-             patch(
-                 "src.evaluation.orchestrator.build_benchmark_context",
--                return_value=MagicMock(),
-+                side_effect=[base_ctx, elf_ctx],
-             ) as mock_build,
-             patch(
-                 "src.evaluation.orchestrator.run_benchmark",
-@@ -205,11 +207,13 @@ class TestRunGrid:
-         ):
-             run_grid(config)
- 
--        # 文档编码 + 建索引只做一遍（13 组共享同一份上下文）
--        assert mock_build.call_count == 1
--        assert mock_rb.call_count == 3
--        expected_ctx = mock_build.return_value
--        assert all(call.kwargs["shared"] is expected_ctx for call in mock_rb.call_args_list)
-+        # 文档编码 + 建索引每条链路各做一遍(baseline → BGE, elf → ELF)
-+        assert mock_build.call_count == 2
-+        assert mock_build.call_args_list[0].kwargs["method"] == METHOD_BASELINE
-+        assert mock_build.call_args_list[1].kwargs["method"] == METHOD_ELF
-+        calls = mock_rb.call_args_list
-+        assert calls[0].kwargs["shared"] is base_ctx  # baseline 组用 BGE 文档库
-+        assert all(call.kwargs["shared"] is elf_ctx for call in calls[1:])  # ELF 组用 ELF 文档库
- 
-     def test_sample_argument_overrides_config(self, tmp_path: Path) -> None:
-         """显式传入的 sample 覆盖 config.sample。"""
