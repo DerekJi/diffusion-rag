@@ -380,8 +380,14 @@ class ELFDenoiser(nn.Module):
         """
         if t.ndim == 0:
             t = t.expand(x.shape[0])
-        if self_cond_cfg_scale is not None and self_cond_cfg_scale.ndim == 0:
-            self_cond_cfg_scale = self_cond_cfg_scale.expand(x.shape[0])
+        elif t.shape[0] != x.shape[0]:
+            # 批量前向: 单值时间步展开到 batch 大小
+            t = t.expand(x.shape[0])
+        if self_cond_cfg_scale is not None:
+            if self_cond_cfg_scale.ndim == 0:
+                self_cond_cfg_scale = self_cond_cfg_scale.expand(x.shape[0])
+            elif self_cond_cfg_scale.shape[0] != x.shape[0]:
+                self_cond_cfg_scale = self_cond_cfg_scale.expand(x.shape[0])
 
         bsz = x.shape[0]
         if x.shape[-1] == 2 * self.text_encoder_dim:
