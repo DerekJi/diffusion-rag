@@ -129,9 +129,13 @@ def build_benchmark_context(
     logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
     encoder, elf_pipeline = create_encoder(method, encoder_name)
-    if method == METHOD_ELF:
+    if elf_pipeline is not None:
+        # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
+        # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
         doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
     else:
+        # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
+        assert isinstance(encoder, BaselineEncoder)
         doc_vectors = encoder.encode_batch(doc_texts)
 
     indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
