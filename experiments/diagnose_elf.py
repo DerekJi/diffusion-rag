@@ -29,6 +29,7 @@ import json
 import time
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 from src.baseline.benchmark import BenchmarkContext, build_benchmark_context
@@ -52,6 +53,8 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
 
     文档向量在构建索引时按 add 顺序对齐 doc_ids,FAISS 的
     reconstruct(i) 按添加顺序取回,因此顺序一致。
+    IVF 索引默认不初始化 DirectMap(直接映射),reconstruct 会抛
+    "direct map not initialized",需要先启用 Hashtable 映射。
 
     Args:
         ctx: 共享评测上下文。
@@ -64,6 +67,9 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
     n = index.ntotal
     if n == 0:
         raise RuntimeError("FAISS 索引为空,无法提取文档向量")
+    # IVF 系列索引需要显式启用 DirectMap 才能 reconstruct
+    if isinstance(index, faiss.IndexIVF):
+        index.set_direct_map_type(faiss.DirectMap.Hashtable)
     vectors = np.vstack([index.reconstruct(i) for i in range(n)]).astype(np.float32)
     ids = list(ctx.retriever._indexer.doc_ids)  # type: ignore[attr-defined]
     if len(ids) != n:
@@ -222,6 +228,21 @@ def _encode_queries_elf(
     }
 
 
+def _encode_queries_elf_raw(
+    ctx: BenchmarkContext, query_ids: list[str]
+) -> dict[str, np.ndarray]:
+    """ELF 编码器原始输出(不增强): 仅 T5 编码 + 投影, 跳过加噪/去噪。
+
+    用于区分"编码空间错位"与"扩散破坏":若原始输出与文档向量已接近
+    正交, 则根因在编码器空间, 与扩散参数无关。
+    """
+    if ctx.elf_pipeline is None:
+        ctx.elf_pipeline = ELFPipeline()
+    return {
+        qid: ctx.elf_pipeline.encode(ctx.data.queries[qid]) for qid in query_ids
+    }
+
+
 def _topk_from_retriever(
     ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K
 ) -> list[str]:
@@ -308,6 +329,12 @@ def _build_report(
         f"| baseline | — | {baseline_stats['query_doc_sim']:.4f} | "
         f"{baseline_stats['query_doc_top10_sim']:.4f} | 1.0000 |"
     )
+    if "elf-raw" in elf_stats:
+        s = elf_stats["elf-raw"]
+        lines.append(
+            f"| elf-raw | 不增强(仅编码) | {s['query_doc_sim']:.4f} | "
+            f"{s['query_doc_top10_sim']:.4f} | {s['overlap_with_baseline']:.4f} |"
+        )
     for p in elf_params:
         cid = str(p["id"])
         s = elf_stats[cid]
@@ -324,6 +351,11 @@ def _build_report(
         "| 组 | 参数 | shift_cos(越高越接近原向量) | shift_l2 |",
         "|---|---:|---:|---:|",
     ]
+    if "elf-raw" in elf_stats:
+        s = elf_stats["elf-raw"]
+        lines.append(
+            f"| elf-raw | 不增强(仅编码) | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |"
+        )
     for p in elf_params:
         cid = str(p["id"])
         s = elf_stats[cid]
@@ -336,6 +368,8 @@ def _build_report(
         "",
         "## 3. 速读指引",
         "",
+        "- **elf-raw 的 query_doc_sim 已接近 0**: 根因是编码器向量空间错位"
+        "(ELF/T5 投影空间 vs BGE 文档空间), 与扩散参数无关。",
         "- **query_doc_sim 显著低于 baseline**:增强把查询向量推离了文档分布,"
         "两条链路的向量空间不对齐。",
         "- **overlap_with_baseline 高但指标差**:问题不在检索,而在相关文档排序/向量本身。",
@@ -401,6 +435,12 @@ def _main() -> int:
     logger.info("baseline 诊断完成: query_doc_sim=%.4f", baseline_stats["query_doc_sim"])
 
     elf_stats: dict[str, dict[str, float]] = {}
+    # ELF 编码器原始输出对照(不增强): 区分"编码空间错位"与"扩散破坏"
+    logger.info("分析 elf-raw: ELF 编码器原始输出(不加噪/不去噪)")
+    raw_qvecs = _encode_queries_elf_raw(ctx, query_ids)
+    elf_stats["elf-raw"] = _analyze_group(
+        ctx, doc_vectors, id_to_idx, query_ids, raw_qvecs, base_qvecs, "elf-raw"
+    )
     for params in config.elf_param_list:
         cid = str(params["id"])
         steps = int(params["steps"])

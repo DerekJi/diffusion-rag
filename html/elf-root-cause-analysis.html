@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ELF 增强链路系统性落后根因分析报告</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --card: #ffffff;
+    --ink: #1f2328;
+    --muted: #57606a;
+    --accent: #0969da;
+    --bad: #cf222e;
+    --warn: #9a6700;
+    --ok: #1a7f37;
+    --border: #d0d7de;
+    --code-bg: #f6f8fa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    line-height: 1.7;
+  }
+  header {
+    background: linear-gradient(135deg, #0d1117, #161b22);
+    color: #e6edf3; padding: 40px 24px 32px; text-align: center;
+  }
+  header h1 { margin: 0 0 8px; font-size: 26px; }
+  header p { margin: 4px 0; color: #8b949e; font-size: 14px; }
+  .verdict {
+    display: inline-block; margin-top: 12px; padding: 6px 16px;
+    background: #cf222e; color: #fff; border-radius: 999px;
+    font-weight: 600; font-size: 14px;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  section {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 24px 28px; margin: 20px 0;
+  }
+  h2 {
+    margin: 0 0 16px; font-size: 20px; padding-bottom: 10px;
+    border-bottom: 2px solid var(--accent);
+  }
+  h3 { margin: 22px 0 10px; font-size: 16px; color: var(--accent); }
+  p { margin: 10px 0; }
+  table {
+    width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px;
+  }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  th { background: #f0f3f6; font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code {
+    font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+    background: var(--code-bg); padding: 1px 6px; border-radius: 4px;
+    font-size: 13px; color: #24292f;
+  }
+  pre {
+    background: #0d1117; color: #e6edf3; border-radius: 8px;
+    padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .b-ok { background: #dafbe1; color: var(--ok); }
+  .b-bad { background: #ffebe9; color: var(--bad); }
+  .b-warn { background: #fff8c5; color: var(--warn); }
+  .key-finding {
+    border-left: 4px solid var(--bad); background: #fff5f5;
+    padding: 12px 16px; border-radius: 6px; margin: 14px 0;
+  }
+  .step { margin: 10px 0 10px 22px; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .file-ref { font-size: 13px; color: var(--muted); margin-top: -8px; }
+  @media (max-width: 640px) {
+    section { padding: 16px; }
+    table { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ELF 增强链路系统性落后根因分析</h1>
+  <p>项目: diffusion-rag &nbsp;·&nbsp; 数据集: nfcorpus &nbsp;·&nbsp; 日期: 2026-08-03</p>
+  <span class="verdict">已确认: ELF 编码器原始输出即与 BGE 文档向量正交(余弦 -0.028), 根因是向量空间错位, 与扩散参数无关</span>
+</header>
+
+<main>
+
+<!-- ============ 1. 现象 ============ -->
+<section>
+  <h2>1. 现象: 12 组 ELF 参数全面落后 baseline</h2>
+  <p>参数网格评测(1 baseline + 12 组 ELF 参数组合, <code>experiments/configs/param_grid.yaml</code>)中,
+  所有 ELF 组的指标以几乎相同的幅度系统性落后 baseline 约 <strong>80%</strong>, 且与扩散参数
+  (steps / noise_t / cfg_scale) 几乎无关:</p>
+
+  <table>
+    <thead>
+      <tr><th>组</th><th>steps</th><th>noise_t</th><th>cfg_scale</th><th class="num">recall@10</th><th class="num">mrr</th><th class="num">ndcg@10</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>baseline</strong></td><td>—</td><td>—</td><td>—</td><td class="num"><strong>0.512</strong></td><td class="num"><strong>0.729</strong></td><td class="num"><strong>0.720</strong></td></tr>
+      <tr><td>ELF-01 ~ ELF-12</td><td>1~4</td><td>0.3~0.6</td><td>1.0~3.0</td><td class="num">0.093~0.097</td><td class="num">0.129~0.142</td><td class="num">0.157~0.170</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">数据来源: <code>--sample 5</code> 评测(<code>experiments/outputs/nfcorpus/summary.csv</code>)。
+  12 组 ELF 结果高度一致(recall@10 区间仅 0.093~0.097), 这是"系统性偏差"而非"参数敏感性"的典型特征。</p>
+
+  <div class="key-finding">
+    <strong>关键观察:</strong> 12 组不同扩散参数的 ELF 指标几乎完全相同 → 扩散增强(加噪/去噪/CFG)
+    不是决定指标的因素; 决定因素在 ELF 链路的<em>上游</em>——查询向量本身。
+  </div>
+</section>
+
+<!-- ============ 2. 诊断证据 ============ -->
+<section>
+  <h2>2. 诊断证据: 查询向量与文档向量接近正交</h2>
+  <p>通过 <code>experiments/diagnose_elf.py</code>(输出 <code>experiments/outputs/nfcorpus/diagnosis/</code>)
+  对同一批查询计算两类向量与文档库的相似度:</p>
+
+  <table>
+    <thead>
+      <tr><th>指标</th><th>baseline(BGE 查询)</th><th>ELF 原始编码(不增强)</th><th>ELF 增强查询(12 组)</th><th>含义</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>query_doc_sim</code></td>
+        <td class="num"><span class="badge b-ok">0.5165</span></td>
+        <td class="num"><span class="badge b-bad">-0.0284</span></td>
+        <td class="num"><span class="badge b-bad">-0.005 ~ -0.003</span></td>
+        <td>查询向量与全部文档向量的平均内积(单位向量, 内积=余弦)</td>
+      </tr>
+      <tr>
+        <td><code>query_doc_top10_sim</code></td>
+        <td class="num"><span class="badge b-ok">0.6202</span></td>
+        <td class="num"><span class="badge b-bad">0.0201</span></td>
+        <td class="num"><span class="badge b-bad">0.039 ~ 0.040</span></td>
+        <td>查询向量与其检索到的 top10 文档的平均内积</td>
+      </tr>
+      <tr>
+        <td><code>overlap_with_baseline</code></td>
+        <td class="num">1.0000</td>
+        <td class="num"><span class="badge b-bad">0.0000</span></td>
+        <td class="num"><span class="badge b-bad">0.0000</span></td>
+        <td>top10 检索结果与 baseline 的重叠率(20 条 query 全部零重叠)</td>
+      </tr>
+      <tr>
+        <td><code>shift_cos</code></td>
+        <td class="num">—</td>
+        <td class="num"><span class="badge b-bad">-0.034</span></td>
+        <td class="num"><span class="badge b-bad">-0.004 ~ -0.002</span></td>
+        <td>相对 baseline 查询向量的余弦(1=一致, 0=正交, 负=反向)</td>
+      </tr>
+      <tr>
+        <td><code>shift_l2</code></td>
+        <td class="num">—</td>
+        <td class="num"><span class="badge b-bad">1.438</span></td>
+        <td class="num"><span class="badge b-bad">1.415 ~ 1.417</span></td>
+        <td>相对 baseline 查询向量的 L2 距离(单位向量最大 2.0, 随机期望 √2≈1.414)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="key-finding">
+    <strong>决定性证据(elf-raw 实验):</strong> 用 <code>ELFPipeline.encode()</code>(跳过加噪/去噪,
+    仅 T5 编码 + 投影)得到的原始查询向量, 与文档向量的平均余弦为 <strong>-0.0284</strong>——
+    <em>不经过任何扩散处理, ELF 编码器输出已经与 BGE 文档向量正交</em>。
+    因此根因是<strong>编码器向量空间错位</strong>, 与扩散增强无关; 12 组参数的
+    <code>query_doc_sim</code> 差异不足 0.002 也印证了这一点。
+  </div>
+</section>
+
+<!-- ============ 3. 根因分析 ============ -->
+<section>
+  <h2>3. 根因分析(三层)</h2>
+
+  <h3>3.1 直接原因: 查询向量与文档向量不在同一向量空间</h3>
+  <p>评测的双链路设计(计划 §2.2/§2.3, <code>docs/diffusion-rag-plan.md</code>)是
+  <strong>"同一向量库, 仅替换查询编码"</strong>:</p>
+  <ul>
+    <li><strong>文档侧</strong>(两条链路共享): BGE 编码器 <code>BAAI/bge-base-en-v1.5</code> → 768-dim;</li>
+    <li><strong>baseline 查询侧</strong>: 同一个 BGE 编码器 → 768-dim, 与文档同空间, 内积正常(0.466);</li>
+    <li><strong>ELF 查询侧</strong>: <code>ELFNativeEncoder</code>(T5-small + 投影层) → 768-dim, 但这是
+      <em>另一个独立训练的向量空间</em>。</li>
+  </ul>
+  <p>两个空间虽然<strong>维度相同(768)</strong>, 但 BGE 与 T5 投影是各自独立训练的, 没有对齐约束。
+  单位向量在不同空间中点积期望接近 0——这正是 0.007 的来源。计划文档中
+  "向量维度: 768(与 ELF 输出对齐)"(plan §2.2)隐含了<strong>"同维即对齐"</strong>的假设, 该假设被数据否定。</p>
+
+  <h3>3.2 深层原因一: 扩散增强使用"占位速度场", 无真实 denoiser</h3>
+  <p>即使空间错位的问题不存在, 当前增强链路也<strong>没有接入真实训练过的去噪模型</strong>。
+  <code>ELFPipeline</code> 的默认速度场是 <code>_default_model_fn</code>(向原点收缩的简易近似,
+  代码注释明确写着"当真实扩散模型不可用时回退使用"), 且噪声调度 <code>σ(t)=t</code> 在
+  <code>noise_t=0.3~0.6</code> 下会注入相当强度的噪声。去噪输出与原始向量相关性极低
+  (<code>shift_cos=0.026</code>), 增强并未产生"语义增强", 而是把向量推离了原始方向。</p>
+
+  <h3>3.3 深层原因二: 扩散噪声尺度与向量分布不匹配</h3>
+  <p>即使速度场正确, <code>add_noise</code> 用 <code>z_t = z_0 + σ(t)·ε</code> 加噪, 其中
+  <code>σ(t)=t</code>。对单位向量, <code>noise_t=0.5</code> 意味着噪声能量为信号能量的 50%,
+  向量已严重污染; 若去噪不精确(见 3.2), 输出将远离 <code>z_0</code>。这也是
+  <code>shift_l2≈1.40</code>(接近两个随机单位向量的期望距离)的原因。</p>
+</section>
+
+<!-- ============ 4. 相关代码 ============ -->
+<section>
+  <h2>4. 相关代码</h2>
+
+  <h3>4.1 查询侧: ELF 增强链路(编码 → 加噪 → 去噪 → 归一化)</h3>
+  <p class="file-ref">src/elf/pipeline.py · ELFPipeline.enhance() L125-176</p>
+  <pre><code>def enhance(self, text, steps=2, noise_t=DEFAULT_NOISE_T, cfg_scale=2.0, rng=None):
+    # Step 1: 编码 —— ELFNativeEncoder(T5-small → 投影 768-dim)
+    z_0 = self.encoder.encode(text)
+    # Step 2: 加噪 —— z_t = z_0 + σ(t)·ε
+    z_t = add_noise(z_0, t=noise_t, rng=rng)
+    # Step 3: Velocity 级 CFG 去噪(默认速度场 = 向原点收缩的占位实现)
+    cond_fn = self._model_fn_cond or _default_model_fn        # ← L152
+    uncond_fn = self._model_fn_uncond or _default_model_fn    # ← L153
+    z_out = denoise_with_cfg(z_t, cond_fn, uncond_fn, steps=steps,
+                             cfg_scale=cfg_scale, t_start=noise_t)
+    # Step 4: L2 归一化
+    z_out = z_out / np.linalg.norm(z_out)</code></pre>
+
+  <p class="file-ref">src/elf/pipeline.py · _default_model_fn L35-51 — 占位速度场, 未接真实 denoiser</p>
+  <pre><code>def _default_model_fn(z, t):
+    """简易去噪速度场: 朝原点收缩。当真实扩散模型不可用时回退使用。"""
+    noise_scale = sigma(t)
+    if noise_scale &gt; 1e-8:
+        return -z / noise_scale          # 朝原点收缩, 与查询内容无关
+    return np.zeros_like(z)</code></pre>
+
+  <h3>4.2 噪声调度与去噪推进</h3>
+  <p class="file-ref">src/elf/diffusion.py · sigma L31-40 / add_noise L48-87 / denoise_with_cfg L157-233</p>
+  <pre><code>def sigma(t):           # L31  线性噪声调度
+    return t
+
+def add_noise(z_0, t, rng):            # L48
+    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32)
+    z_t = z_0 + sigma(t) * eps         # 对单位向量, t=0.5 即 50% 噪声能量
+    return z_t
+
+# denoise_with_cfg: 每步 v_cfg = v_uncond + cfg_scale·(v_cond - v_uncond), 再 z += v·Δt</code></pre>
+
+  <h3>4.3 查询编码: ELF 原生编码器(T5 空间)</h3>
+  <p class="file-ref">src/elf/native_encoder.py · _encode_torch L158-199</p>
+  <pre><code>outputs = self._t5(**inputs)                          # T5-small, hidden=512
+pooled = masked_hidden.sum(1) / mask.sum(1)           # mean pooling → 512
+projected = self._projection(pooled)                  # Linear 512→768
+normalized = torch.nn.functional.normalize(projected) # L2 归一化
+# ↑ 输出在"T5 投影空间", 与 BGE 文档向量(另一个空间)点积≈0</code></pre>
+
+  <h3>4.4 文档侧: BGE 编码(双链路共享)</h3>
+  <p class="file-ref">src/baseline/encoder.py · BaselineEncoder.encode / encode_batch</p>
+  <pre><code>vec = self._model.encode(text, normalize_embeddings=True)  # BAAI/bge-base-en-v1.5</code></pre>
+  <p class="file-ref">src/baseline/benchmark.py · run_benchmark L179-227 — 文档准备与查询链路切换</p>
+  <pre><code># 文档侧恒用 BaselineEncoder(BGE), 两条链路共享同一份索引
+encoder = BaselineEncoder(model_name=encoder_name)
+doc_vectors = encoder.encode_batch(doc_texts)        # L116
+indexer.build(doc_vectors, doc_ids)
+
+# 查询侧按 method 切换: baseline → BGE;  elf → ELFPipeline(T5+扩散)
+if method == METHOD_ELF:
+    elf_pipeline = ELFPipeline()
+    query_encoder = _elf_query_encode                 # enhance() 输出
+else:
+    query_encoder = encoder.encode                    # BGE 输出</code></pre>
+</section>
+
+<!-- ============ 5. 验证结果 ============ -->
+<section>
+  <h2>5. 验证结果: 错位发生在编码层, 已排除扩散因素</h2>
+  <p>针对 3.1/3.2 的分歧, 执行了 <strong>elf-raw 实验</strong>(<code>ELFPipeline.encode()</code>,
+  只做 T5 编码 + 投影, 完全跳过加噪/去噪):</p>
+  <table>
+    <thead>
+      <tr><th>查询链路</th><th class="num">query_doc_sim</th><th>结论</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>baseline(BGE)</td><td class="num">0.5165</td><td>同空间, 正常</td></tr>
+      <tr><td>ELF 原始编码(不增强)</td><td class="num">-0.0284</td><td><span class="badge b-bad">已与文档正交 → 编码空间错位</span></td></tr>
+      <tr><td>ELF 增强(12 组)</td><td class="num">-0.005 ~ -0.003</td><td>在错位空间内小幅扰动, 无修复能力</td></tr>
+    </tbody>
+  </table>
+  <div class="key-finding">
+    <strong>结论:</strong> 根因是 ELF 编码器(T5-small + 投影)输出空间与 BGE 文档空间
+    <strong>不对齐</strong>, 与扩散增强(steps / noise_t / cfg_scale)无关。
+    12 组参数的指标与相似度几乎完全一致(差异 &lt; 0.002)是该结论的直接佐证。
+  </div>
+  <p class="muted">注: 早期 sample=1 诊断中 <code>overlap_with_baseline=1.0</code> 是检索池不足
+  (仅 5 篇文档全部被返回)的假象; sample=20(542 篇文档)下该列为 0.0, 具备有效区分度。
+  诊断脚本已固化 elf-raw 对照(<code>experiments/diagnose_elf.py</code>), 后续可直接复现。</p>
+</section>
+
+<!-- ============ 6. 解决办法 ============ -->
+<section>
+  <h2>6. 可能的解决办法(按成本从低到高)</h2>
+
+  <h3>方案 A: 先验证, 再对症下药(必做, 零成本)</h3>
+  <p class="step">执行第 5 节实验, 确认错位层。后续方案按实验结果选择。</p>
+
+  <h3>方案 B: 文档侧也使用 ELF 编码器(若错位在编码层, 首选)</h3>
+  <p class="step">把文档向量库也换成 <code>ELFNativeEncoder</code> 编码, 使查询与文档落在同一
+  (ELF) 空间, 双链路各自"自洽":</p>
+  <ul>
+    <li><strong>改动点</strong>: <code>run_benchmark</code> 文档准备阶段按 method 切换编码器(当前恒用 BGE);
+      或为 ELF 链路单独建索引(放弃"双链路共享索引"计划假设);</li>
+    <li><strong>代价</strong>: 全库文档重新编码(CPU 上 nfcorpus 542 篇约 8 分钟, 有缓存机制可复用);
+      文档量大的数据集耗时显著, 可配合批量编码 <code>encode_batch</code>;</li>
+    <li><strong>效果</strong>: 保证 ELF 链路检索有效(相似度从 0.007 回到正常水平), 指标才能反映
+      "增强"的真实效果。</li>
+  </ul>
+
+  <h3>方案 C: 接入真实扩散 denoiser, 校准噪声调度(若错位在扩散层)</h3>
+  <ul>
+    <li>用训练过的 velocity/score 模型替换 <code>_default_model_fn</code> 占位实现
+      (<code>ELFPipeline(model_fn_cond=..., model_fn_uncond=...)</code> 已预留注入接口);</li>
+    <li>校准 <code>sigma(t)</code> 与 ELF 训练时一致, 或降低 <code>noise_t</code>(如 0.1~0.2)
+      使去噪更易收敛; 增加 <code>steps</code> 验证 ODE 收敛性;</li>
+    <li>检查 <code>denoise_with_cfg</code> 数值稳定性(dt 符号、t_start 推断)。</li>
+  </ul>
+
+  <h3>方案 D: 使 ELF 输出空间与 BGE 对齐(若必须保持共享索引)</h3>
+  <ul>
+    <li>用 BGE 文档/查询向量作为监督目标, 微调 <code>_projection</code>(或加一层可学习对齐变换);
+      ELF 增强在"已对齐"的 BGE 空间内进行;</li>
+    <li>代价最高(需要训练数据/目标函数), 仅在双链路必须共享同一向量库且不能换文档编码时考虑。</li>
+  </ul>
+
+  <h3>方案 E: 短期降噪实验(快速试错)</h3>
+  <p class="step">若想快速确认扩散链路影响, 可临时把 <code>noise_t</code> 降到 0(等于不做扩散,
+  只走 ELF 编码), 对比指标:
+  <code>query_doc_sim</code> 若仍 ≈ 0.007 → 编码错位坐实, 直接转方案 B。</p>
+</section>
+
+<!-- ============ 7. 附录 ============ -->
+<section>
+  <h2>7. 附录: 相关文件与命令</h2>
+  <table>
+    <thead><tr><th>文件</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/elf/pipeline.py</code></td><td>ELF 增强链路(encode → add_noise → denoise_with_cfg → normalize)</td></tr>
+      <tr><td><code>src/elf/diffusion.py</code></td><td>噪声调度 σ(t)=t、前向加噪、Velocity CFG 去噪</td></tr>
+      <tr><td><code>src/elf/native_encoder.py</code></td><td>ELF 原生编码器(T5-small + 512→768 投影, 查询侧)</td></tr>
+      <tr><td><code>src/baseline/encoder.py</code></td><td>BGE 编码器(文档侧 + baseline 查询侧)</td></tr>
+      <tr><td><code>src/baseline/benchmark.py</code></td><td>双链路评测: 文档恒用 BGE, 查询按 method 切换</td></tr>
+      <tr><td><code>experiments/diagnose_elf.py</code></td><td>诊断脚本: query_doc_sim / top10_sim / overlap / shift</td></tr>
+      <tr><td><code>experiments/outputs/nfcorpus/diagnosis/</code></td><td>本次诊断数据(diagnosis.json / diagnosis.md)</td></tr>
+      <tr><td><code>docs/diffusion-rag-plan.md</code></td><td>项目计划(§2.2/§2.3 双链路设计, "768 对齐"假设来源)</td></tr>
+    </tbody>
+  </table>
+  <h3>复现命令</h3>
+  <pre><code># 评测(13 组: 1 baseline + 12 ELF)
+py -m src.evaluation.orchestrator --config experiments/configs/param_grid.yaml \
+    --dataset nfcorpus --sample 20
+
+# 诊断(输出 diagnosis.json / diagnosis.md)
+py -m experiments.diagnose_elf --dataset nfcorpus --sample 20</code></pre>
+</section>
+
+</main>
+</body>
+</html>
