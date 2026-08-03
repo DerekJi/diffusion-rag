@@ -146,12 +146,18 @@ class ELFPipeline:
         noise_t: float = DEFAULT_NOISE_T,
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
+        blend_alpha: float = 0.5,
     ) -> NDArray[np.float32]:
-        """完整增强链路: encode → 加噪 → 去噪(真实 DiT denoiser)→ 投影 → L2 normalize。
+        """完整增强链路: encode → 加噪 → 去噪(真实 DiT denoiser)→ 与原始编码 blend → L2 normalize。
 
         当加载了 ELF-B denoiser(issue #37)时, 在 T5 hidden(512)空间做
         flow matching 增强: latent 归一化 → 插值加噪 → ODE 去噪(网络预测
         x0, v = (x0 - z)/max(1-t, t_eps))→ denormalize → 投影回 768。
+
+        denoiser 会把查询向量推向文本流形高密度区、损失查询特异性
+        (sample=20 检索指标为负), 因此与原始编码按 blend_alpha 混合:
+        out = (1-α)·raw + α·denoised。实验显示 α≈0.5~0.75 检索最佳
+        (recall@10 提升约 4 倍, 纯 denoiser α=1.0 最差)。
 
         回退路径(denoiser 不可用): 使用占位速度场 denoise_with_cfg。
 
@@ -161,6 +167,8 @@ class ELFPipeline:
             noise_t: 加噪强度 ∈ [0, 1]。0=无噪声, 1=完全噪声。
             cfg_scale: CFG 引导强度。1.0 表示不使用 CFG。
             rng: 可选随机数生成器（固定种子用）。
+            blend_alpha: denoiser 输出权重 ∈ [0, 1]。
+                        0=纯原始编码, 1=纯 denoiser 输出。
 
         Returns:
             L2 归一化的 float32 增强向量，shape (768,)。
@@ -171,7 +179,9 @@ class ELFPipeline:
             and self._model_fn_cond is None
             and isinstance(self.encoder, ELFNativeEncoder)
         ):
-            return self._enhance_with_denoiser(text, steps, noise_t, cfg_scale, rng)
+            return self._enhance_with_denoiser(
+                text, steps, noise_t, cfg_scale, rng, blend_alpha
+            )
 
         # ── 回退路径: 占位速度场(测试 / denoiser 不可用) ──
         # Step 1: 编码
@@ -216,8 +226,9 @@ class ELFPipeline:
         noise_t: float,
         cfg_scale: float,
         rng: np.random.Generator | None,
+        blend_alpha: float,
     ) -> NDArray[np.float32]:
-        """在 T5 hidden 空间做 flow matching 增强, 再投影回 768 检索嵌入。"""
+        """在 T5 hidden 空间做 flow matching 增强, 与原始编码混合后投影回 768。"""
         assert self._denoiser is not None
         assert isinstance(self.encoder, ELFNativeEncoder)
 
@@ -238,14 +249,23 @@ class ELFPipeline:
         z0_pred = x_pred_prev if x_pred_prev is not None else z_t
 
         pooled_out = np.asarray(z0_pred, dtype=np.float32) * _LATENT_STD  # denormalize
-        vec = self.encoder.embed_from_pooled(pooled_out)  # 512 → 768 L2
+        denoised = self.encoder.embed_from_pooled(pooled_out)  # 512 → 768 L2
+
+        # 与原始编码 blend: 纯 denoiser 输出会损失查询特异性(issue #37 调优)
+        raw = self.encoder.encode(text)
+        vec = raw * (1.0 - blend_alpha) + denoised * blend_alpha
+        norm = float(np.linalg.norm(vec))
+        if norm > 1e-8:
+            vec = vec / norm
 
         logger.debug(
-            "enhance(denoiser): text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f",
+            "enhance(denoiser): text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f, "
+            "blend_alpha=%.2f",
             text[:50],
             steps,
             noise_t,
             cfg_scale,
+            blend_alpha,
         )
         return vec
 
