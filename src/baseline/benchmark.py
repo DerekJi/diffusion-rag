@@ -52,25 +52,30 @@ class BenchmarkContext:
 
     包含采样后的数据集、文档编码器与检索器，供 run_grid 的
     baseline + 多组 ELF 复用，避免每组重复加载数据集、编码文档、
-    建索引与加载 ELF 模型（文档侧编码在两条链路上完全一致）。
+    建索引与加载 ELF 模型。
 
     Attributes:
         dataset: 上下文对应的数据集名称（用于 shared 模式下的一致性校验）。
+        method: 上下文对应的检索链路（'baseline' / 'elf'）。
         data: 采样后的数据集三元组。
-        encoder: 文档侧 BGE 编码器（同时用于 baseline 查询编码）。
+        encoder: 文档侧编码器（baseline → BGE；elf → ELFPipeline），
+                 baseline 查询编码也复用该实例。
         retriever: 基于文档向量构建的检索器。
-        elf_pipeline: 惰性创建的 ELFPipeline，首个 ELF 组加载后复用。
+        elf_pipeline: ELFPipeline（仅 method='elf' 时非 None），
+                      文档编码与查询增强共用同一实例。
     """
 
     dataset: str
+    method: str
     data: DatasetTriple
-    encoder: BaselineEncoder
+    encoder: BaselineEncoder | ELFPipeline
     retriever: Retriever
     elf_pipeline: ELFPipeline | None = None
 
 
 def build_benchmark_context(
     dataset: str = "nfcorpus",
+    method: str = METHOD_BASELINE,
     encoder_name: str = DEFAULT_ENCODER,
     index_nlist: int = DEFAULT_INDEX_NLIST,
     seed: int = DEFAULT_SEED,
@@ -82,16 +87,29 @@ def build_benchmark_context(
     全部文档 → 构建 FAISS 索引），抽出来以便参数网格的 13 组评测
     只执行一次，其余组通过 run_benchmark(shared=ctx) 直接复用。
 
+    文档侧编码按 method 切换（issue #33）：
+    - 'baseline': 用 BGE 编码器，查询/文档同处 BGE 空间；
+    - 'elf':      用 ELFPipeline（T5 原生编码），查询/文档同处 ELF 空间，
+                  ELF 链路自建索引，避免与 BGE 文档空间错位。
+
     Args:
         dataset: 数据集名称。
-        encoder_name: 文档侧编码器名称。
+        method: 检索链路，'baseline'（BGE 文档编码）或 'elf'（ELF 文档编码）。
+        encoder_name: 文档侧编码器名称（仅 method='baseline' 生效）。
         index_nlist: FAISS IVF 聚类中心数。
         seed: 随机种子。
         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
 
     Returns:
         构建完成的 BenchmarkContext。
+
+    Raises:
+        ValueError: method 不在 SUPPORTED_METHODS 中。
     """
+    if method not in SUPPORTED_METHODS:
+        supported = ", ".join(SUPPORTED_METHODS)
+        raise ValueError(f"不支持的链路 method='{method}'，支持: {supported}")
+
     set_seed(seed)
 
     data = load_dataset(dataset)
@@ -112,18 +130,33 @@ def build_benchmark_context(
 
     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
 
-    # 编码文档 + 建索引（双链路共享）
-    encoder = BaselineEncoder(model_name=encoder_name)
+    # 编码文档 + 建索引（按 method 选择文档编码器, 查询与文档同空间）
     doc_ids = sorted(data.corpus.keys())
     doc_texts = [data.corpus[did] for did in doc_ids]
+    logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
-    logger.info("编码 %d 篇文档...", len(doc_texts))
-    doc_vectors = encoder.encode_batch(doc_texts)
+    if method == METHOD_ELF:
+        # ELF 链路: 文档与查询共用同一个 ELFPipeline(ELFNativeEncoder),
+        # 输出同一 ELF 空间, 修复与 BGE 文档空间错位的问题 (issue #33)
+        elf_pipeline = ELFPipeline()
+        doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
+        encoder: BaselineEncoder | ELFPipeline = elf_pipeline
+    else:
+        encoder = BaselineEncoder(model_name=encoder_name)
+        doc_vectors = encoder.encode_batch(doc_texts)
+        elf_pipeline = None
 
     indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
     indexer.build(doc_vectors, doc_ids)
     retriever = Retriever(indexer)
-    return BenchmarkContext(dataset=dataset, data=data, encoder=encoder, retriever=retriever)
+    return BenchmarkContext(
+        dataset=dataset,
+        method=method,
+        data=data,
+        encoder=encoder,
+        retriever=retriever,
+        elf_pipeline=elf_pipeline,
+    )
 
 
 def run_benchmark(
@@ -183,6 +216,7 @@ def run_benchmark(
     if shared is None:
         ctx = build_benchmark_context(
             dataset=dataset,
+            method=method,
             encoder_name=encoder_name,
             index_nlist=index_nlist,
             seed=seed,
@@ -193,6 +227,10 @@ def run_benchmark(
         if ctx.dataset != dataset:
             raise ValueError(
                 f"shared 上下文的数据集 '{ctx.dataset}' 与参数 dataset='{dataset}' 不一致"
+            )
+        if ctx.method != method:
+            raise ValueError(
+                f"shared 上下文的链路 '{ctx.method}' 与参数 method='{method}' 不一致"
             )
     data = ctx.data
     encoder = ctx.encoder

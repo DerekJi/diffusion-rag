@@ -14,7 +14,11 @@ import pytest
 from numpy.typing import NDArray
 
 import src.baseline.benchmark as benchmark
-from src.baseline.benchmark import BenchmarkContext, run_benchmark
+from src.baseline.benchmark import (
+    BenchmarkContext,
+    build_benchmark_context,
+    run_benchmark,
+)
 from src.config import METHOD_BASELINE, METHOD_ELF
 from src.evaluation.dataset import DatasetTriple
 
@@ -49,6 +53,12 @@ class TestRunBenchmark:
 
         self._elf_pipeline_mock = MagicMock()
         self._elf_pipeline_mock.enhance.return_value = fixed_vec
+        # ELF 模式文档编码走 pipeline.encoder.encode_batch, 返回 (n, 768) 数组
+        elf_inner_encoder = MagicMock()
+        elf_inner_encoder.encode_batch.side_effect = lambda texts, batch_size=32: np.tile(
+            fixed_vec, (len(texts), 1)
+        )
+        self._elf_pipeline_mock.encoder = elf_inner_encoder
 
         patchers = [
             patch("src.baseline.benchmark.load_dataset", return_value=_make_fake_data()),
@@ -141,6 +151,7 @@ class TestRunBenchmark:
         )
         ctx = BenchmarkContext(
             dataset="nfcorpus",
+            method=METHOD_ELF,
             data=_make_fake_data(),
             encoder=self._doc_encoder,
             retriever=retriever,
@@ -164,12 +175,39 @@ class TestRunBenchmark:
         """shared 上下文数据集与参数不一致时抛出 ValueError（防止写错输出目录）。"""
         ctx = BenchmarkContext(
             dataset="msmarco",
+            method=METHOD_BASELINE,
             data=_make_fake_data(),
             encoder=self._doc_encoder,
             retriever=MagicMock(),
         )
         with pytest.raises(ValueError, match="不一致"):
             run_benchmark(dataset="nfcorpus", output_dir=str(self._output_dir), shared=ctx)
+
+    # ── 文档编码按 method 切换 (issue #33) ─────
+
+    def test_build_context_baseline_docs_use_bge(self, tmp_path: Path) -> None:
+        """method='baseline' 时文档用 BGE 编码, 不创建 ELFPipeline。"""
+        ctx = build_benchmark_context(
+            dataset="nfcorpus", method=METHOD_BASELINE, sample=2, index_nlist=2
+        )
+        assert ctx.method == METHOD_BASELINE
+        assert ctx.elf_pipeline is None
+        assert self._elf_pipeline_mock.enhance.call_count == 0
+
+    def test_build_context_elf_docs_use_elf_pipeline(self, tmp_path: Path) -> None:
+        """method='elf' 时文档用 ELFPipeline 编码, 查询与文档同处 ELF 空间。"""
+        with patch(
+            "src.baseline.benchmark.ELFPipeline",
+            return_value=self._elf_pipeline_mock,
+        ) as factory:
+            ctx = build_benchmark_context(
+                dataset="nfcorpus", method=METHOD_ELF, sample=2, index_nlist=2
+            )
+        # 文档编码走 pipeline.encoder.encode_batch(ELF 空间), 而非 BGE
+        assert self._elf_pipeline_mock.encoder.encode_batch.call_count == 1
+        assert ctx.encoder is self._elf_pipeline_mock
+        assert ctx.elf_pipeline is self._elf_pipeline_mock
+        assert ctx.method == METHOD_ELF
 
     # ── 采样 / 参数校验 ───────────────────────
 
