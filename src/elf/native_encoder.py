@@ -13,6 +13,7 @@ ELF 模型架构（embedded-language-flows/ELF-B-owt-torch）:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -213,6 +214,14 @@ def _load_elf_checkpoint(
     从 HuggingFace Hub 或本地路径加载 ELF checkpoint，
     若找到匹配的投影层权重则覆盖初始化。
 
+    支持两种 checkpoint 格式:
+    - 训练检查点（ELF-B 官方格式）: 顶层为 ``params`` / ``ema_params1``
+      嵌套字典，投影权重为 ``proj_kernel`` (768, 512)，
+      对应 T5 hidden(512) → 768-dim 文本嵌入。优先使用 EMA 权重
+      （``ema_params1``，评测更稳定），缺失时回退 ``params``。
+    - 平铺权重字典（旧/自定义格式）: 直接含 ``projection.weight`` /
+      ``decoder.weight`` / ``embedding_proj.weight`` 等 key。
+
     Args:
         projection: 投影层。
         checkpoint_path: HuggingFace 模型 ID 或本地路径。
@@ -225,15 +234,27 @@ def _load_elf_checkpoint(
         from huggingface_hub import hf_hub_download
 
         # 判断是本地路径还是 HuggingFace 仓库 ID
-        if os.path.isdir(checkpoint_path) or os.path.isfile(checkpoint_path):
-            # 本地路径：直接加载文件
+        if os.path.isdir(checkpoint_path):
+            # 本地目录：拼接 checkpoint 文件名
+            checkpoint_file = os.path.join(checkpoint_path, "checkpoint_95085")
+        elif os.path.isfile(checkpoint_path):
+            # 本地文件：直接加载
             checkpoint_file = checkpoint_path
+        elif os.path.isabs(checkpoint_path):
+            # 本地绝对路径但文件/目录不存在：直接失败，不回退远程下载
+            raise FileNotFoundError(f"本地 ELF checkpoint 不存在: {checkpoint_path}")
         elif "/" in checkpoint_path:
-            # HuggingFace 仓库 ID
-            checkpoint_file = hf_hub_download(
-                repo_id=checkpoint_path,
-                filename="checkpoint_95085",
-            )
+            # HuggingFace 仓库 ID：优先使用本地下载目录，避免重复下载
+            local_repo = Path("models") / checkpoint_path
+            local_file = local_repo / "checkpoint_95085"
+            if local_file.is_file():
+                logger.info("使用本地 ELF checkpoint: %s", local_file)
+                checkpoint_file = str(local_file)
+            else:
+                checkpoint_file = hf_hub_download(
+                    repo_id=checkpoint_path,
+                    filename="checkpoint_95085",
+                )
         else:
             # 回退到默认 ELF 仓库
             logger.warning(
@@ -247,14 +268,33 @@ def _load_elf_checkpoint(
             )
         state = torch.load(checkpoint_file, map_location=device, weights_only=True)
 
-        # 尝试加载投影层权重（key 可能为 "projection.weight" 或 "decoder.weight"）
+        # 训练检查点格式：解包嵌套权重，优先 EMA 权重
+        weights: dict = state
+        source = "root"
+        if isinstance(state, dict) and isinstance(state.get("params"), dict):
+            ema = state.get("ema_params1")
+            if isinstance(ema, dict):
+                weights = ema
+                source = "ema_params1"
+            else:
+                weights = state["params"]
+                source = "params"
+            logger.debug("检测到训练检查点格式，使用 %s 权重", source)
+
+        # 尝试加载投影层权重（ELF 官方 key 为 "proj_kernel"，
+        # 也兼容旧名 "projection.weight" / "decoder.weight" 等）
         loaded = False
-        for key in ["projection.weight", "decoder.weight", "embedding_proj.weight"]:
-            if key in state and hasattr(state[key], "shape"):
-                ckpt_weight = state[key]
+        for key in [
+            "proj_kernel",
+            "projection.weight",
+            "decoder.weight",
+            "embedding_proj.weight",
+        ]:
+            if key in weights and hasattr(weights[key], "shape"):
+                ckpt_weight = weights[key]
                 if ckpt_weight.shape == projection.weight.shape:
                     projection.weight.data.copy_(ckpt_weight)
-                    logger.info("从 checkpoint 加载投影层权重 (key=%s)", key)
+                    logger.info("从 checkpoint 加载投影层权重 (key=%s, source=%s)", key, source)
                     loaded = True
                     break
                 else:

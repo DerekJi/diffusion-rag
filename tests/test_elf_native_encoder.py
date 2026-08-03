@@ -3,13 +3,14 @@
 使用 mock 模式，无须下载真实模型或 ELF 权重。
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 import torch
 
-from src.elf.native_encoder import ELFNativeEncoder
+from src.elf.native_encoder import ELFNativeEncoder, _load_elf_checkpoint
 
 
 def _make_fixed_vector() -> np.ndarray:
@@ -139,3 +140,118 @@ class TestELFNativeEncoderMock:
         ):
             with pytest.raises(RuntimeError, match="无法加载 ELF 原生模型"):
                 ELFNativeEncoder(device="cpu")
+
+
+class TestLoadElfCheckpoint:
+    """_load_elf_checkpoint 的加载逻辑测试（离线，无网络）。"""
+
+    @pytest.fixture()
+    def projection(self) -> torch.nn.Linear:
+        """固定随机初始化的投影层 (512 → 768, 无 bias)。"""
+        torch.manual_seed(0)
+        return torch.nn.Linear(512, 768, bias=False)
+
+    def _write_train_ckpt(
+        self, path, proj_kernel: torch.Tensor | None = None, with_ema: bool = True
+    ) -> None:
+        """写一个 ELF-B 训练检查点格式文件（params/ema_params1 嵌套）。"""
+        params = {
+            "blocks.0.attn.qkv.weight": torch.randn(768, 768),
+            "text_proj.proj2.weight": torch.randn(768, 128),
+        }
+        state: dict = {"params": params, "opt_state": {}, "step": 100, "epoch": 5}
+        if proj_kernel is not None:
+            params["proj_kernel"] = proj_kernel
+        if with_ema:
+            ema = dict(params)
+            if proj_kernel is not None:
+                ema["proj_kernel"] = proj_kernel + 0.01  # EMA 与 params 不同，便于断言
+            state["ema_params1"] = ema
+        torch.save(state, path)
+
+    def test_train_ckpt_uses_ema(self, projection, tmp_path) -> None:
+        """训练检查点格式应解包并优先使用 ema_params1 的 proj_kernel。"""
+        ckpt = tmp_path / "ckpt.pt"
+        kernel = torch.randn(768, 512)
+        self._write_train_ckpt(ckpt, proj_kernel=kernel, with_ema=True)
+
+        loaded = _load_elf_checkpoint(projection, str(ckpt), torch.device("cpu"))
+
+        assert loaded is True
+        assert torch.equal(projection.weight.data, kernel + 0.01)
+
+    def test_train_ckpt_fallback_params(self, projection, tmp_path) -> None:
+        """无 ema_params1 时应回退 params 的 proj_kernel。"""
+        ckpt = tmp_path / "ckpt.pt"
+        kernel = torch.randn(768, 512)
+        self._write_train_ckpt(ckpt, proj_kernel=kernel, with_ema=False)
+
+        loaded = _load_elf_checkpoint(projection, str(ckpt), torch.device("cpu"))
+
+        assert loaded is True
+        assert torch.equal(projection.weight.data, kernel)
+
+    def test_flat_ckpt_legacy_key(self, projection, tmp_path) -> None:
+        """平铺格式的旧 key projection.weight 仍应兼容。"""
+        ckpt = tmp_path / "ckpt.pt"
+        kernel = torch.randn(768, 512)
+        torch.save({"projection.weight": kernel}, ckpt)
+
+        loaded = _load_elf_checkpoint(projection, str(ckpt), torch.device("cpu"))
+
+        assert loaded is True
+        assert torch.equal(projection.weight.data, kernel)
+
+    def test_shape_mismatch_skipped(self, projection, tmp_path) -> None:
+        """shape 不匹配的 key 应跳过并返回 False。"""
+        ckpt = tmp_path / "ckpt.pt"
+        before = projection.weight.data.clone()
+        torch.save({"proj_kernel": torch.randn(128, 512)}, ckpt)
+
+        loaded = _load_elf_checkpoint(projection, str(ckpt), torch.device("cpu"))
+
+        assert loaded is False
+        assert torch.equal(projection.weight.data, before)
+
+    def test_local_dir_resolves_filename(self, projection, tmp_path) -> None:
+        """传入本地目录时应拼接 checkpoint_95085。"""
+        kernel = torch.randn(768, 512)
+        repo_dir = tmp_path / "ELF-B"
+        repo_dir.mkdir()
+        torch.save({"params": {"proj_kernel": kernel}}, repo_dir / "checkpoint_95085")
+
+        loaded = _load_elf_checkpoint(projection, str(repo_dir), torch.device("cpu"))
+
+        assert loaded is True
+        assert torch.equal(projection.weight.data, kernel)
+
+    def test_hf_id_prefers_local_models(self, projection, tmp_path, monkeypatch) -> None:
+        """HF 仓库 ID 且本地 models/ 已存在时应使用本地文件，不调用 hf_hub_download。"""
+        kernel = torch.randn(768, 512)
+        local_repo = Path("models") / "test-org" / "test-repo"
+        local_repo.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"params": {"proj_kernel": kernel}, "ema_params1": {"proj_kernel": kernel}},
+            local_repo / "checkpoint_95085",
+        )
+        monkeypatch.setattr(
+            "huggingface_hub.hf_hub_download",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用 hf_hub_download")),
+        )
+        try:
+            loaded = _load_elf_checkpoint(
+                projection, "test-org/test-repo", torch.device("cpu")
+            )
+            assert loaded is True
+            assert torch.equal(projection.weight.data, kernel)
+        finally:
+            import shutil
+
+            shutil.rmtree(Path("models") / "test-org")
+
+    def test_missing_file_returns_false(self, projection, tmp_path) -> None:
+        """文件不存在时应返回 False 而不是抛异常。"""
+        loaded = _load_elf_checkpoint(
+            projection, str(tmp_path / "nope.pt"), torch.device("cpu")
+        )
+        assert loaded is False
