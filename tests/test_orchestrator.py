@@ -186,13 +186,15 @@ class TestRunGrid:
             METHOD_ELF,
         ]
 
-    def test_builds_context_once_and_shares_it(self, tmp_path: Path) -> None:
-        """共享上下文只构建一次，且透传给所有 run_benchmark 调用。"""
+    def test_builds_context_once_per_method_and_shares_it(self, tmp_path: Path) -> None:
+        """baseline/elf 各构建一次上下文,并按链路分别透传(issue #33)。"""
         config = _make_config(tmp_path, n_groups=2)
+        base_ctx = MagicMock()
+        elf_ctx = MagicMock()
         with (
             patch(
                 "src.evaluation.orchestrator.build_benchmark_context",
-                return_value=MagicMock(),
+                side_effect=[base_ctx, elf_ctx],
             ) as mock_build,
             patch(
                 "src.evaluation.orchestrator.run_benchmark",
@@ -205,11 +207,13 @@ class TestRunGrid:
         ):
             run_grid(config)
 
-        # 文档编码 + 建索引只做一遍（13 组共享同一份上下文）
-        assert mock_build.call_count == 1
-        assert mock_rb.call_count == 3
-        expected_ctx = mock_build.return_value
-        assert all(call.kwargs["shared"] is expected_ctx for call in mock_rb.call_args_list)
+        # 文档编码 + 建索引每条链路各做一遍(baseline → BGE, elf → ELF)
+        assert mock_build.call_count == 2
+        assert mock_build.call_args_list[0].kwargs["method"] == METHOD_BASELINE
+        assert mock_build.call_args_list[1].kwargs["method"] == METHOD_ELF
+        calls = mock_rb.call_args_list
+        assert calls[0].kwargs["shared"] is base_ctx  # baseline 组用 BGE 文档库
+        assert all(call.kwargs["shared"] is elf_ctx for call in calls[1:])  # ELF 组用 ELF 文档库
 
     def test_sample_argument_overrides_config(self, tmp_path: Path) -> None:
         """显式传入的 sample 覆盖 config.sample。"""

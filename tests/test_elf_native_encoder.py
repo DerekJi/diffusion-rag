@@ -239,9 +239,7 @@ class TestLoadElfCheckpoint:
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应调用 hf_hub_download")),
         )
         try:
-            loaded = _load_elf_checkpoint(
-                projection, "test-org/test-repo", torch.device("cpu")
-            )
+            loaded = _load_elf_checkpoint(projection, "test-org/test-repo", torch.device("cpu"))
             assert loaded is True
             assert torch.equal(projection.weight.data, kernel)
         finally:
@@ -251,7 +249,5 @@ class TestLoadElfCheckpoint:
 
     def test_missing_file_returns_false(self, projection, tmp_path) -> None:
         """文件不存在时应返回 False 而不是抛异常。"""
-        loaded = _load_elf_checkpoint(
-            projection, str(tmp_path / "nope.pt"), torch.device("cpu")
-        )
+        loaded = _load_elf_checkpoint(projection, str(tmp_path / "nope.pt"), torch.device("cpu"))
         assert loaded is False

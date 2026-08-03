@@ -171,12 +171,24 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
 
     rows: list[dict[str, object]] = []
 
-    # 一次性构建共享上下文：加载数据集 + 采样 + 编码全部文档 + 建索引。
-    # 13 组评测（1 baseline + 12 ELF）复用同一份文档向量与索引，
-    # 避免每组重复编码文档（CPU 上每组约 8.5 分钟的重复计算）。
-    logger.info("[grid] 构建共享评测上下文 (加载数据集 + 编码文档 + 建索引)...")
-    ctx = build_benchmark_context(
+    # 一次性构建双共享上下文(issue #33): 文档侧编码按 method 切换,
+    # 查询与文档同空间, 修复 ELF 与 BGE 文档空间错位的问题。
+    # baseline → BGE 文档库; elf → ELF 文档库(ELF 链路自建索引)。
+    # 每条链路各自的 13 组(1 baseline + 12 ELF)复用同一份文档向量与索引,
+    # 避免每组重复编码文档。
+    logger.info("[grid] 构建共享评测上下文 (baseline: BGE 文档编码)...")
+    baseline_ctx = build_benchmark_context(
         dataset=config.dataset,
+        method=METHOD_BASELINE,
+        encoder_name=config.encoder,
+        index_nlist=config.index_nlist,
+        seed=config.seed,
+        sample=effective_sample,
+    )
+    logger.info("[grid] 构建共享评测上下文 (elf: ELF 文档编码)...")
+    elf_ctx = build_benchmark_context(
+        dataset=config.dataset,
+        method=METHOD_ELF,
         encoder_name=config.encoder,
         index_nlist=config.index_nlist,
         seed=config.seed,
@@ -186,7 +198,10 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
     logger.info("[grid] 运行 Baseline 对照组")
     rows.append(
         _run_group(
-            config, method=METHOD_BASELINE, sample=effective_sample, shared=ctx
+            config,
+            method=METHOD_BASELINE,
+            sample=effective_sample,
+            shared=baseline_ctx,
         )
     )
 
@@ -204,7 +219,7 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
                 method=METHOD_ELF,
                 sample=effective_sample,
                 elf_params=params,
-                shared=ctx,
+                shared=elf_ctx,
             )
         )
 

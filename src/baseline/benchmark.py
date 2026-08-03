@@ -38,7 +38,9 @@ from src.config import (
 from src.elf.pipeline import ELFPipeline
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
+from src.utils.encoder_factory import create_encoder
 from src.utils.logger import get_logger
+from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
@@ -52,26 +54,31 @@ class BenchmarkContext:
 
     包含采样后的数据集、文档编码器与检索器，供 run_grid 的
     baseline + 多组 ELF 复用，避免每组重复加载数据集、编码文档、
-    建索引与加载 ELF 模型（文档侧编码在两条链路上完全一致）。
+    建索引与加载 ELF 模型。
 
     Attributes:
         dataset: 上下文对应的数据集名称（用于 shared 模式下的一致性校验）。
+        method: 上下文对应的检索链路（'baseline' / 'elf'）。
         data: 采样后的数据集三元组。
-        encoder: 文档侧 BGE 编码器（同时用于 baseline 查询编码）。
+        encoder: 文档侧编码器（baseline → BGE；elf → ELFPipeline），
+                 baseline 查询编码也复用该实例。
         retriever: 基于文档向量构建的检索器。
-        elf_pipeline: 惰性创建的 ELFPipeline，首个 ELF 组加载后复用。
+        elf_pipeline: ELFPipeline（仅 method='elf' 时非 None），
+                      文档编码与查询增强共用同一实例。
     """
 
     dataset: str
+    method: str
     data: DatasetTriple
-    encoder: BaselineEncoder
+    encoder: BaselineEncoder | ELFPipeline
     retriever: Retriever
     elf_pipeline: ELFPipeline | None = None
 
 
 def build_benchmark_context(
     dataset: str = "nfcorpus",
-    encoder_name: str = DEFAULT_ENCODER,
+    method: str = METHOD_BASELINE,
+    encoder_name: str | None = None,
     index_nlist: int = DEFAULT_INDEX_NLIST,
     seed: int = DEFAULT_SEED,
     sample: int | None = None,
@@ -82,54 +89,72 @@ def build_benchmark_context(
     全部文档 → 构建 FAISS 索引），抽出来以便参数网格的 13 组评测
     只执行一次，其余组通过 run_benchmark(shared=ctx) 直接复用。
 
+    文档侧编码按 method 切换（issue #33）：
+    - 'baseline': 用 BGE 编码器，查询/文档同处 BGE 空间；
+    - 'elf':      用 ELFPipeline（T5 原生编码），查询/文档同处 ELF 空间，
+                  ELF 链路自建索引，避免与 BGE 文档空间错位。
+
     Args:
         dataset: 数据集名称。
-        encoder_name: 文档侧编码器名称。
+        method: 检索链路，'baseline'（BGE 文档编码）或 'elf'（ELF 文档编码）。
+        encoder_name: 文档侧编码器名称（仅 method='baseline' 生效；
+                      None 时使用 DEFAULT_ENCODER）。
         index_nlist: FAISS IVF 聚类中心数。
         seed: 随机种子。
         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
 
     Returns:
         构建完成的 BenchmarkContext。
+
+    Raises:
+        ValueError: method 不在 SUPPORTED_METHODS 中。
     """
+    if method not in SUPPORTED_METHODS:
+        supported = ", ".join(SUPPORTED_METHODS)
+        raise ValueError(f"不支持的链路 method='{method}'，支持: {supported}")
+
     set_seed(seed)
 
     data = load_dataset(dataset)
 
     # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
     if sample is not None and sample < len(data.queries):
-        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
-        sampled_qids = qids_with_qrels[:sample]
-        referenced: set[str] = set()
-        for qid in sampled_qids:
-            referenced.update(data.qrels[qid].keys())
-        data = DatasetTriple(
-            queries={qid: data.queries[qid] for qid in sampled_qids},
-            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
-            qrels={qid: data.qrels[qid] for qid in sampled_qids},
-        )
-        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+        data = sample_dataset(data, sample)
 
     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
 
-    # 编码文档 + 建索引（双链路共享）
-    encoder = BaselineEncoder(model_name=encoder_name)
+    # 编码文档 + 建索引（按 method 选择文档编码器, 查询与文档同空间）
     doc_ids = sorted(data.corpus.keys())
     doc_texts = [data.corpus[did] for did in doc_ids]
+    logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
-    logger.info("编码 %d 篇文档...", len(doc_texts))
-    doc_vectors = encoder.encode_batch(doc_texts)
+    encoder, elf_pipeline = create_encoder(method, encoder_name)
+    if elf_pipeline is not None:
+        # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
+        # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
+        doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
+    else:
+        # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
+        assert isinstance(encoder, BaselineEncoder)
+        doc_vectors = encoder.encode_batch(doc_texts)
 
     indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
     indexer.build(doc_vectors, doc_ids)
     retriever = Retriever(indexer)
-    return BenchmarkContext(dataset=dataset, data=data, encoder=encoder, retriever=retriever)
+    return BenchmarkContext(
+        dataset=dataset,
+        method=method,
+        data=data,
+        encoder=encoder,
+        retriever=retriever,
+        elf_pipeline=elf_pipeline,
+    )
 
 
 def run_benchmark(
     dataset: str = "nfcorpus",
     method: str = METHOD_BASELINE,
-    encoder_name: str = DEFAULT_ENCODER,
+    encoder_name: str | None = None,
     index_nlist: int = DEFAULT_INDEX_NLIST,
     k_values: list[int] | None = None,
     seed: int = DEFAULT_SEED,
@@ -152,7 +177,8 @@ def run_benchmark(
     Args:
         dataset: 数据集名称。
         method: 检索链路，'baseline'（BGE 编码）或 'elf'（ELF 扩散增强）。
-        encoder_name: HuggingFace 编码器名称（文档侧，两条链路共用）。
+        encoder_name: HuggingFace 编码器名称（文档侧，仅 method='baseline' 生效；
+                      None 时使用 DEFAULT_ENCODER）。
         index_nlist: FAISS IVF 聚类中心数。
         k_values: 评估的 k 值列表。
         seed: 随机种子。
@@ -183,6 +209,7 @@ def run_benchmark(
     if shared is None:
         ctx = build_benchmark_context(
             dataset=dataset,
+            method=method,
             encoder_name=encoder_name,
             index_nlist=index_nlist,
             seed=seed,
@@ -194,6 +221,8 @@ def run_benchmark(
             raise ValueError(
                 f"shared 上下文的数据集 '{ctx.dataset}' 与参数 dataset='{dataset}' 不一致"
             )
+        if ctx.method != method:
+            raise ValueError(f"shared 上下文的链路 '{ctx.method}' 与参数 method='{method}' 不一致")
     data = ctx.data
     encoder = ctx.encoder
     retriever = ctx.retriever

@@ -29,15 +29,17 @@ import json
 import time
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 from src.baseline.benchmark import BenchmarkContext, build_benchmark_context
-from src.baseline.encoder import BaselineEncoder
-from src.config import SUPPORTED_DATASETS
+from src.config import METHOD_BASELINE, METHOD_ELF, SUPPORTED_DATASETS
 from src.elf.pipeline import ELFPipeline
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.orchestrator import ExperimentConfig, load_param_grid
+from src.utils.encoder_factory import create_encoder
 from src.utils.logger import get_logger
+from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
@@ -52,6 +54,8 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
 
     文档向量在构建索引时按 add 顺序对齐 doc_ids,FAISS 的
     reconstruct(i) 按添加顺序取回,因此顺序一致。
+    IVF 索引默认不初始化 DirectMap(直接映射),reconstruct 会抛
+    "direct map not initialized",需要先启用 Hashtable 映射。
 
     Args:
         ctx: 共享评测上下文。
@@ -64,6 +68,9 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
     n = index.ntotal
     if n == 0:
         raise RuntimeError("FAISS 索引为空,无法提取文档向量")
+    # IVF 系列索引需要显式启用 DirectMap 才能 reconstruct
+    if isinstance(index, faiss.IndexIVF):
+        index.set_direct_map_type(faiss.DirectMap.Hashtable)
     vectors = np.vstack([index.reconstruct(i) for i in range(n)]).astype(np.float32)
     ids = list(ctx.retriever._indexer.doc_ids)  # type: ignore[attr-defined]
     if len(ids) != n:
@@ -72,10 +79,16 @@ def _extract_doc_vectors(ctx: BenchmarkContext) -> tuple[np.ndarray, list[str]]:
 
 
 def _cache_key(
-    dataset: str, sample: int | None, nlist: int, encoder: str
+    dataset: str, method: str, sample: int | None, nlist: int, encoder: str
 ) -> dict[str, object]:
     """文档向量缓存的参数指纹。"""
-    return {"dataset": dataset, "sample": sample, "nlist": nlist, "encoder": encoder}
+    return {
+        "dataset": dataset,
+        "method": method,
+        "sample": sample,
+        "nlist": nlist,
+        "encoder": encoder,
+    }
 
 
 def _cache_paths(cache_dir: Path) -> tuple[Path, Path, Path]:
@@ -116,33 +129,38 @@ def _save_cached_vectors(
     """将文档向量与参数指纹写入磁盘缓存。"""
     cache_dir.mkdir(parents=True, exist_ok=True)
     meta_path, vec_path, ids_path = _cache_paths(cache_dir)
-    meta_path.write_text(
-        json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    meta_path.write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
     np.save(vec_path, vectors)
     ids_path.write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
     logger.info("文档向量已缓存: %d 篇文档 (%s)", len(ids), vec_path)
 
 
 def _prepare_docs(
-    dataset: str, sample: int | None, nlist: int, encoder: str, seed: int
+    dataset: str,
+    method: str,
+    sample: int | None,
+    nlist: int,
+    encoder: str,
+    seed: int,
 ) -> tuple[BenchmarkContext, np.ndarray, list[str]]:
-    """构建评测上下文,返回 (ctx, doc_vectors, doc_ids)。
+    """构建指定链路的评测上下文,返回 (ctx, doc_vectors, doc_ids)。
 
     优先复用磁盘缓存跳过文档编码;未命中时编码一次并落盘。
+    缓存按 (dataset, method, sample, nlist, encoder) 区分。
     """
     cache_dir = Path("experiments/outputs") / dataset / "cache"
-    params = _cache_key(dataset, sample, nlist, encoder)
+    params = _cache_key(dataset, method, sample, nlist, encoder)
     cached = _load_cached_vectors(cache_dir, params)
     if cached is not None:
         vectors, ids = cached
         ctx = _rebuild_context_from_vectors(
-            dataset, vectors, ids, nlist, encoder, seed, sample
+            dataset, method, vectors, ids, nlist, encoder, seed, sample
         )
         return ctx, vectors, ids
 
     ctx = build_benchmark_context(
         dataset=dataset,
+        method=method,
         encoder_name=encoder,
         index_nlist=nlist,
         seed=seed,
@@ -155,6 +173,7 @@ def _prepare_docs(
 
 def _rebuild_context_from_vectors(
     dataset: str,
+    method: str,
     vectors: np.ndarray,
     ids: list[str],
     nlist: int,
@@ -162,36 +181,32 @@ def _rebuild_context_from_vectors(
     seed: int,
     sample: int | None,
 ) -> BenchmarkContext:
-    """用缓存的文档向量重建索引与上下文(跳过耗时编码)。"""
+    """用缓存的文档向量重建索引与上下文(跳过耗时编码)。
+
+    按 method 重建对应的编码器:baseline → BGE;elf → ELFPipeline。
+    """
     set_seed(seed)
     data = load_dataset(dataset)
 
-    # 与 build_benchmark_context 相同的采样逻辑
+    # 与 build_benchmark_context 相同的采样逻辑（共用 sample_dataset）
     if sample is not None and sample < len(data.queries):
-        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
-        sampled_qids = qids_with_qrels[:sample]
-        referenced: set[str] = set()
-        for qid in sampled_qids:
-            referenced.update(data.qrels[qid].keys())
-        data = DatasetTriple(
-            queries={qid: data.queries[qid] for qid in sampled_qids},
-            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
-            qrels={qid: data.qrels[qid] for qid in sampled_qids},
-        )
-        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+        data = sample_dataset(data, sample)
 
-    encoder_obj = BaselineEncoder(model_name=encoder)
+    encoder_obj, elf_pipeline = create_encoder(method, encoder)
     indexer = FAISSIndexer(dimension=vectors.shape[1], nlist=nlist)
     indexer.build(vectors, ids)
     retriever = Retriever(indexer)
     return BenchmarkContext(
-        dataset=dataset, data=data, encoder=encoder_obj, retriever=retriever
+        dataset=dataset,
+        method=method,
+        data=data,
+        encoder=encoder_obj,
+        retriever=retriever,
+        elf_pipeline=elf_pipeline,
     )
 
 
-def _encode_queries_baseline(
-    ctx: BenchmarkContext, query_ids: list[str]
-) -> dict[str, np.ndarray]:
+def _encode_queries_baseline(ctx: BenchmarkContext, query_ids: list[str]) -> dict[str, np.ndarray]:
     """baseline 查询向量:逐条 BGE 编码(与评测一致)。"""
     return {qid: ctx.encoder.encode(ctx.data.queries[qid]) for qid in query_ids}
 
@@ -222,9 +237,23 @@ def _encode_queries_elf(
     }
 
 
-def _topk_from_retriever(
-    ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K
-) -> list[str]:
+def _encode_queries_elf_raw(ctx: BenchmarkContext, query_ids: list[str]) -> dict[str, np.ndarray]:
+    """ELF 编码器原始输出(不增强): 仅 T5 编码 + 投影, 跳过加噪/去噪。
+
+    用于区分"编码空间错位"与"扩散破坏":若原始输出与文档向量已接近
+    正交, 则根因在编码器空间, 与扩散参数无关。
+
+    前置条件: ctx 已由 _prepare_docs(..., method=METHOD_ELF) 构建,
+    ctx.elf_pipeline 非 None。
+    """
+    assert ctx.elf_pipeline is not None, (
+        "_encode_queries_elf_raw 要求 ctx.elf_pipeline 已初始化；"
+        "请通过 _prepare_docs(..., method='elf') 构建上下文"
+    )
+    return {qid: ctx.elf_pipeline.encode(ctx.data.queries[qid]) for qid in query_ids}
+
+
+def _topk_from_retriever(ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K) -> list[str]:
     """检索 top-k 文档 id(与评测相同的 retriever.search 路径)。"""
     doc_ids_found, _ = ctx.retriever.search(qvec, k=k)
     return doc_ids_found
@@ -253,10 +282,21 @@ def _analyze_group(
     id_to_idx: dict[str, int],
     query_ids: list[str],
     qvecs: dict[str, np.ndarray],
-    base_qvecs: dict[str, np.ndarray] | None,
-    label: str,
+    base_qvecs: dict[str, np.ndarray] | None = None,
+    baseline_top10: dict[str, list[str]] | None = None,
 ) -> dict[str, float]:
-    """计算一组查询向量的诊断指标。"""
+    """计算一组查询向量的诊断指标。
+
+    Args:
+        ctx: 该链路自己的评测上下文（文档向量与该链路同空间）。
+        doc_vectors: 该链路的文档向量（与 ctx 的索引一致）。
+        id_to_idx: doc_id → 文档向量行号映射。
+        query_ids: 查询 ID 列表。
+        qvecs: 本组查询向量。
+        base_qvecs: baseline(BGE) 查询向量,提供时计算 shift 扰动指标。
+        baseline_top10: baseline 的 top10 检索结果 {qid: doc_ids},
+                        提供时计算与 baseline 的重叠率。
+    """
     avg_sims: list[float] = []
     top10_sims: list[float] = []
     overlaps: list[float] = []
@@ -271,27 +311,32 @@ def _analyze_group(
         top10_sims.append(_topk_sim(doc_vectors, id_to_idx, qvec, top10_ids))
 
         if base_qvecs is not None:
-            overlaps.append(_overlap(_topk_from_retriever(ctx, base_qvecs[qid]), top10_ids))
             base_vec = base_qvecs[qid]
             cos = float(np.dot(qvec, base_vec) / (np.linalg.norm(qvec) * np.linalg.norm(base_vec)))
             shifts_cos.append(cos)
             shifts_l2.append(float(np.linalg.norm(qvec - base_vec)))
+        if baseline_top10 is not None:
+            overlaps.append(_overlap(baseline_top10[qid], top10_ids))
 
     result: dict[str, float] = {
         "query_doc_sim": float(np.mean(avg_sims)),
         "query_doc_top10_sim": float(np.mean(top10_sims)),
     }
     if base_qvecs is not None:
-        result["overlap_with_baseline"] = float(np.mean(overlaps))
         result["shift_cos"] = float(np.mean(shifts_cos))
         result["shift_l2"] = float(np.mean(shifts_l2))
+    if baseline_top10 is not None:
+        result["overlap_with_baseline"] = float(np.mean(overlaps))
     result["n_queries"] = float(len(query_ids))
     return result
 
 
 def _build_report(
-    dataset: str, sample: int | None, baseline_stats: dict[str, float],
-    elf_stats: dict[str, dict[str, float]], elf_params: list[dict[str, object]],
+    dataset: str,
+    sample: int | None,
+    baseline_stats: dict[str, float],
+    elf_stats: dict[str, dict[str, float]],
+    elf_params: list[dict[str, object]],
 ) -> str:
     """生成 Markdown 诊断报告。"""
     lines = [
@@ -308,6 +353,12 @@ def _build_report(
         f"| baseline | — | {baseline_stats['query_doc_sim']:.4f} | "
         f"{baseline_stats['query_doc_top10_sim']:.4f} | 1.0000 |"
     )
+    if "elf-raw" in elf_stats:
+        s = elf_stats["elf-raw"]
+        lines.append(
+            f"| elf-raw | 不增强(仅编码) | {s['query_doc_sim']:.4f} | "
+            f"{s['query_doc_top10_sim']:.4f} | {s['overlap_with_baseline']:.4f} |"
+        )
     for p in elf_params:
         cid = str(p["id"])
         s = elf_stats[cid]
@@ -324,18 +375,21 @@ def _build_report(
         "| 组 | 参数 | shift_cos(越高越接近原向量) | shift_l2 |",
         "|---|---:|---:|---:|",
     ]
+    if "elf-raw" in elf_stats:
+        s = elf_stats["elf-raw"]
+        lines.append(f"| elf-raw | 不增强(仅编码) | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |")
     for p in elf_params:
         cid = str(p["id"])
         s = elf_stats[cid]
         param_str = f"{p['steps']}/{p['noise_t']}/{p['cfg_scale']}"
-        lines.append(
-            f"| {cid} | s={param_str} | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |"
-        )
+        lines.append(f"| {cid} | s={param_str} | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |")
 
     lines += [
         "",
         "## 3. 速读指引",
         "",
+        "- **elf-raw 的 query_doc_sim 已接近 0**: 根因是编码器向量空间错位"
+        "(ELF/T5 投影空间 vs BGE 文档空间), 与扩散参数无关。",
         "- **query_doc_sim 显著低于 baseline**:增强把查询向量推离了文档分布,"
         "两条链路的向量空间不对齐。",
         "- **overlap_with_baseline 高但指标差**:问题不在检索,而在相关文档排序/向量本身。",
@@ -374,53 +428,85 @@ def _main() -> int:
             "请传 --sample N(建议与评测一致)"
         )
 
-    out_dir = Path(args.output) if args.output else (
-        Path("experiments/outputs") / dataset / "diagnosis"
+    out_dir = (
+        Path(args.output) if args.output else (Path("experiments/outputs") / dataset / "diagnosis")
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("诊断开始: dataset=%s, sample=%d, seed=%d", dataset, sample, seed)
     t0 = time.perf_counter()
 
-    ctx, doc_vectors, doc_ids = _prepare_docs(
+    # 双链路各自独立构建(issue #33): baseline → BGE 文档库;
+    # elf → ELF 文档库, 查询与文档同空间, 反映修复后的真实对齐度
+    base_ctx, base_vectors, base_ids = _prepare_docs(
         dataset=dataset,
+        method=METHOD_BASELINE,
         sample=sample,
         nlist=config.index_nlist,
         encoder=config.encoder,
         seed=seed,
     )
-    id_to_idx = {did: i for i, did in enumerate(doc_ids)}
-    query_ids = sorted(ctx.data.queries.keys())
-    logger.info("查询数: %d, 文档数: %d", len(query_ids), len(doc_ids))
-
-    # baseline 查询向量(作为 ELF 组的对照)
-    base_qvecs = _encode_queries_baseline(ctx, query_ids)
-    baseline_stats = _analyze_group(
-        ctx, doc_vectors, id_to_idx, query_ids, base_qvecs, None, "baseline"
+    elf_ctx, elf_vectors, elf_ids = _prepare_docs(
+        dataset=dataset,
+        method=METHOD_ELF,
+        sample=sample,
+        nlist=config.index_nlist,
+        encoder=config.encoder,
+        seed=seed,
     )
+    query_ids = sorted(base_ctx.data.queries.keys())
+    logger.info(
+        "查询数: %d, 文档数: baseline=%d / elf=%d", len(query_ids), len(base_ids), len(elf_ids)
+    )
+
+    # baseline 查询向量与其 top10 检索结果(作为 ELF 组的对照)
+    base_qvecs = _encode_queries_baseline(base_ctx, query_ids)
+    base_id_to_idx = {did: i for i, did in enumerate(base_ids)}
+    baseline_top10 = {qid: _topk_from_retriever(base_ctx, base_qvecs[qid]) for qid in query_ids}
+    baseline_stats = _analyze_group(base_ctx, base_vectors, base_id_to_idx, query_ids, base_qvecs)
     logger.info("baseline 诊断完成: query_doc_sim=%.4f", baseline_stats["query_doc_sim"])
 
+    # ELF 链路(文档为 ELF 编码, 与查询同空间)
+    elf_id_to_idx = {did: i for i, did in enumerate(elf_ids)}
     elf_stats: dict[str, dict[str, float]] = {}
+    # ELF 编码器原始输出对照(不增强): 区分"编码空间错位"与"扩散破坏"
+    logger.info("分析 elf-raw: ELF 编码器原始输出(不加噪/不去噪)")
+    raw_qvecs = _encode_queries_elf_raw(elf_ctx, query_ids)
+    elf_stats["elf-raw"] = _analyze_group(
+        elf_ctx,
+        elf_vectors,
+        elf_id_to_idx,
+        query_ids,
+        raw_qvecs,
+        base_qvecs,
+        baseline_top10,
+    )
     for params in config.elf_param_list:
         cid = str(params["id"])
         steps = int(params["steps"])
         noise_t = float(params["noise_t"])
         cfg_scale = float(params["cfg_scale"])
-        logger.info("分析 %s: steps=%d, noise_t=%.2f, cfg_scale=%.1f", cid, steps, noise_t, cfg_scale)
-        elf_qvecs = _encode_queries_elf(ctx, query_ids, steps, noise_t, cfg_scale, seed)
+        logger.info(
+            "分析 %s: steps=%d, noise_t=%.2f, cfg_scale=%.1f", cid, steps, noise_t, cfg_scale
+        )
+        elf_qvecs = _encode_queries_elf(elf_ctx, query_ids, steps, noise_t, cfg_scale, seed)
         elf_stats[cid] = _analyze_group(
-            ctx, doc_vectors, id_to_idx, query_ids, elf_qvecs, base_qvecs, cid
+            elf_ctx,
+            elf_vectors,
+            elf_id_to_idx,
+            query_ids,
+            elf_qvecs,
+            base_qvecs,
+            baseline_top10,
         )
 
-    report_md = _build_report(
-        dataset, sample, baseline_stats, elf_stats, config.elf_param_list
-    )
+    report_md = _build_report(dataset, sample, baseline_stats, elf_stats, config.elf_param_list)
     summary = {
         "dataset": dataset,
         "sample": sample,
         "seed": seed,
         "n_queries": len(query_ids),
-        "n_docs": len(doc_ids),
+        "n_docs": {"baseline": len(base_ids), "elf": len(elf_ids)},
         "baseline": baseline_stats,
         "elf_groups": elf_stats,
         "elf_params": config.elf_param_list,
@@ -429,9 +515,7 @@ def _main() -> int:
     md_path = out_dir / "diagnosis.md"
     json_path = out_dir / "diagnosis.json"
     md_path.write_text(report_md, encoding="utf-8")
-    json_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("诊断完成 (%.1fs): %s / %s", time.perf_counter() - t0, json_path, md_path)
     print(report_md)
