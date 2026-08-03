@@ -16,11 +16,18 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
 from src.elf.diffusion import DEFAULT_NOISE_T, add_noise, denoise_with_cfg, sigma
 from src.elf.encoder import ELFEncoder
 from src.elf.native_encoder import ELFNativeEncoder
+from src.elf.native_model import (
+    _DENOISER_NOISE_SCALE,
+    _LATENT_STD,
+    _T_EPS,
+    ELFDenoiser,
+)
 from src.utils.device import get_device
 from src.utils.logger import get_logger
 
@@ -102,9 +109,19 @@ class ELFPipeline:
         self._model_fn_cond = model_fn_cond
         self._model_fn_uncond = model_fn_uncond or model_fn_cond
 
+        # 真实 ELF-B DiT denoiser(issue #37): use_native 且底层为
+        # ELFNativeEncoder 时加载完整 checkpoint 权重, 替换占位速度场。
+        self._denoiser: ELFDenoiser | None = None
+        if use_native and isinstance(self.encoder, ELFNativeEncoder):
+            try:
+                self._denoiser = ELFDenoiser(device=self.device)
+            except Exception as e:  # pragma: no cover - 权重缺失时的回退
+                logger.warning("ELFDenoiser 加载失败, 回退占位速度场: %s", e)
+
         logger.info(
-            "ELFPipeline 已初始化 (device=%s, cond_fn=%s, uncond_fn=%s)",
+            "ELFPipeline 已初始化 (device=%s, denoiser=%s, cond_fn=%s, uncond_fn=%s)",
             self.device,
+            "ELF-B" if self._denoiser is not None else "none(占位)",
             type(model_fn_cond).__name__ if model_fn_cond is not None else "default",
             type(model_fn_uncond).__name__ if model_fn_uncond is not None else "default",
         )
@@ -130,7 +147,13 @@ class ELFPipeline:
         cfg_scale: float = _DEFAULT_CFG_SCALE,
         rng: np.random.Generator | None = None,
     ) -> NDArray[np.float32]:
-        """完整增强链路: encode → add_noise → denoise_with_cfg → L2 normalize。
+        """完整增强链路: encode → 加噪 → 去噪(真实 DiT denoiser)→ 投影 → L2 normalize。
+
+        当加载了 ELF-B denoiser(issue #37)时, 在 T5 hidden(512)空间做
+        flow matching 增强: latent 归一化 → 插值加噪 → ODE 去噪(网络预测
+        x0, v = (x0 - z)/max(1-t, t_eps))→ denormalize → 投影回 768。
+
+        回退路径(denoiser 不可用): 使用占位速度场 denoise_with_cfg。
 
         Args:
             text: 输入文本。
@@ -142,6 +165,15 @@ class ELFPipeline:
         Returns:
             L2 归一化的 float32 增强向量，shape (768,)。
         """
+        # 真实 denoiser 路径: 仅当未显式注入自定义速度场时使用(issue #37)
+        if (
+            self._denoiser is not None
+            and self._model_fn_cond is None
+            and isinstance(self.encoder, ELFNativeEncoder)
+        ):
+            return self._enhance_with_denoiser(text, steps, noise_t, cfg_scale, rng)
+
+        # ── 回退路径: 占位速度场(测试 / denoiser 不可用) ──
         # Step 1: 编码
         z_0 = self.encoder.encode(text)
 
@@ -166,7 +198,7 @@ class ELFPipeline:
             z_out = z_out / norm
 
         logger.debug(
-            "enhance: text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f, norm=%.4f",
+            "enhance(fallback): text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f, norm=%.4f",
             text[:50],
             steps,
             noise_t,
@@ -174,6 +206,89 @@ class ELFPipeline:
             norm,
         )
         return z_out
+
+    # ── 真实 denoiser 增强(issue #37) ─────────
+
+    def _enhance_with_denoiser(
+        self,
+        text: str,
+        steps: int,
+        noise_t: float,
+        cfg_scale: float,
+        rng: np.random.Generator | None,
+    ) -> NDArray[np.float32]:
+        """在 T5 hidden 空间做 flow matching 增强, 再投影回 768 检索嵌入。"""
+        assert self._denoiser is not None
+        assert isinstance(self.encoder, ELFNativeEncoder)
+
+        pooled = self.encoder.encode_pooled(text)  # (512,) raw hidden
+        z0 = np.asarray(pooled, dtype=np.float32) / _LATENT_STD  # latent 归一化
+        if rng is None:
+            rng = np.random.default_rng()
+        eps = rng.standard_normal(512, dtype=np.float32) * _DENOISER_NOISE_SCALE
+        z_t = ((1.0 - noise_t) * z0 + noise_t * eps).astype(np.float32)
+
+        # ODE 去噪: t 从 noise_t 线性降至 t_eps, 网络预测 x0, v = (x0 - z)/(1-t)
+        t_vals = np.linspace(noise_t, _T_EPS, steps + 1)
+        x_pred_prev: NDArray[np.float32] | None = None
+        for i in range(steps):
+            v, x = self._denoiser_step(z_t, float(t_vals[i]), x_pred_prev, cfg_scale)
+            z_t = (z_t + (t_vals[i + 1] - t_vals[i]) * v).astype(np.float32)
+            x_pred_prev = x
+        z0_pred = x_pred_prev if x_pred_prev is not None else z_t
+
+        pooled_out = np.asarray(z0_pred, dtype=np.float32) * _LATENT_STD  # denormalize
+        vec = self.encoder.embed_from_pooled(pooled_out)  # 512 → 768 L2
+
+        logger.debug(
+            "enhance(denoiser): text=%r, steps=%d, noise_t=%.2f, cfg_scale=%.1f",
+            text[:50],
+            steps,
+            noise_t,
+            cfg_scale,
+        )
+        return vec
+
+    def _denoiser_step(
+        self,
+        z: NDArray[np.float32],
+        t: float,
+        x_pred_prev: NDArray[np.float32] | None,
+        cfg_scale: float,
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        """单步去噪: 模型预测 x0, 由插值公式反推速度; cfg_scale>1 时 CFG 外推。"""
+        assert self._denoiser is not None
+        z_t = torch.from_numpy(np.asarray(z, dtype=np.float32)).view(1, 1, -1)
+        t_t = torch.tensor([t])
+        scale_t = torch.tensor([1.0])
+        x_prev = (
+            torch.zeros_like(z_t)
+            if x_pred_prev is None
+            else torch.from_numpy(np.asarray(x_pred_prev, dtype=np.float32)).view(1, 1, -1)
+        )
+        x_den = max(1.0 - t, _T_EPS)
+
+        # 条件预测
+        net = self._denoiser(
+            torch.cat([z_t, x_prev], dim=-1), t_t, self_cond_cfg_scale=scale_t
+        )
+        x_cond = net[0, 0].detach().cpu().numpy().astype(np.float32)
+        v_cond = ((x_cond - z) / x_den).astype(np.float32)
+
+        if abs(cfg_scale - 1.0) < 1e-6:
+            return v_cond, x_cond
+
+        # 无条件预测: latent 清零(z=0, self-cond=0)
+        z_u = torch.zeros_like(z_t)
+        net_u = self._denoiser(
+            torch.cat([z_u, z_u], dim=-1), t_t, self_cond_cfg_scale=scale_t
+        )
+        x_uncond = net_u[0, 0].detach().cpu().numpy().astype(np.float32)
+        v_uncond = (x_uncond / x_den).astype(np.float32)  # z=0
+
+        v = (v_uncond + cfg_scale * (v_cond - v_uncond)).astype(np.float32)
+        x = (x_uncond + cfg_scale * (x_cond - x_uncond)).astype(np.float32)
+        return v, x
 
     def enhance_batch(
         self,
