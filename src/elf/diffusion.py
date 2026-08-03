@@ -50,7 +50,7 @@ def add_noise(
     t: float = DEFAULT_NOISE_T,
     rng: np.random.Generator | None = None,
 ) -> NDArray[np.float32]:
-    """前向加噪: z_t = z_0 + σ(t) · ε, ε ~ N(0, I)
+    """前向加噪: z_t = z_0 + σ(t) · ε, ε ~ N(0, I/d)
 
     Args:
         z_0: 干净向量。shape (d,) 或 (n, d)。
@@ -63,6 +63,13 @@ def add_noise(
     Raises:
         ValueError: t 不在 [0, 1] 范围内。
         ValueError: z_0 不是 float32 数组。
+
+    Notes:
+        噪声方差按维度归一 (ε ~ N(0, I/d), d=z_0 最后一维):
+        输入是单位向量 (每维方差 1/d), 若用全空间高斯 ε ~ N(0, I),
+        在 768 维下噪声总能量为信号能量的 d 倍 (noise_t=0.3 时约 69 倍),
+        加噪后向量几乎完全被噪声淹没, 任何去噪都无法恢复原始方向
+        (issue #35)。除以 √d 后噪声能量 = t², 与信号能量同量级。
 
     Examples:
         >>> z_0 = np.random.randn(768).astype(np.float32)
@@ -80,7 +87,10 @@ def add_noise(
     if rng is None:
         rng = np.random.default_rng()
 
-    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32)
+    dim = z_0.shape[-1]
+    # 噪声方差按维度归一: scale = 1/√d, 保持 float32 运算
+    scale = np.float32(1.0 / np.sqrt(dim))
+    eps = rng.standard_normal(size=z_0.shape, dtype=np.float32) * scale
     z_t = z_0 + sigma(t) * eps
 
     logger.debug("add_noise: t=%.2f, shape=%s", t, z_0.shape)
