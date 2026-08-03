@@ -38,7 +38,9 @@ from src.config import (
 from src.elf.pipeline import ELFPipeline
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
+from src.utils.encoder_factory import create_encoder
 from src.utils.logger import get_logger
+from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
@@ -76,7 +78,7 @@ class BenchmarkContext:
 def build_benchmark_context(
     dataset: str = "nfcorpus",
     method: str = METHOD_BASELINE,
-    encoder_name: str = DEFAULT_ENCODER,
+    encoder_name: str | None = None,
     index_nlist: int = DEFAULT_INDEX_NLIST,
     seed: int = DEFAULT_SEED,
     sample: int | None = None,
@@ -95,7 +97,8 @@ def build_benchmark_context(
     Args:
         dataset: 数据集名称。
         method: 检索链路，'baseline'（BGE 文档编码）或 'elf'（ELF 文档编码）。
-        encoder_name: 文档侧编码器名称（仅 method='baseline' 生效）。
+        encoder_name: 文档侧编码器名称（仅 method='baseline' 生效；
+                      None 时使用 DEFAULT_ENCODER）。
         index_nlist: FAISS IVF 聚类中心数。
         seed: 随机种子。
         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
@@ -116,17 +119,7 @@ def build_benchmark_context(
 
     # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
     if sample is not None and sample < len(data.queries):
-        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
-        sampled_qids = qids_with_qrels[:sample]
-        referenced: set[str] = set()
-        for qid in sampled_qids:
-            referenced.update(data.qrels[qid].keys())
-        data = DatasetTriple(
-            queries={qid: data.queries[qid] for qid in sampled_qids},
-            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
-            qrels={qid: data.qrels[qid] for qid in sampled_qids},
-        )
-        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+        data = sample_dataset(data, sample)
 
     logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
 
@@ -135,16 +128,11 @@ def build_benchmark_context(
     doc_texts = [data.corpus[did] for did in doc_ids]
     logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
+    encoder, elf_pipeline = create_encoder(method, encoder_name)
     if method == METHOD_ELF:
-        # ELF 链路: 文档与查询共用同一个 ELFPipeline(ELFNativeEncoder),
-        # 输出同一 ELF 空间, 修复与 BGE 文档空间错位的问题 (issue #33)
-        elf_pipeline = ELFPipeline()
         doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
-        encoder: BaselineEncoder | ELFPipeline = elf_pipeline
     else:
-        encoder = BaselineEncoder(model_name=encoder_name)
         doc_vectors = encoder.encode_batch(doc_texts)
-        elf_pipeline = None
 
     indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
     indexer.build(doc_vectors, doc_ids)
@@ -162,7 +150,7 @@ def build_benchmark_context(
 def run_benchmark(
     dataset: str = "nfcorpus",
     method: str = METHOD_BASELINE,
-    encoder_name: str = DEFAULT_ENCODER,
+    encoder_name: str | None = None,
     index_nlist: int = DEFAULT_INDEX_NLIST,
     k_values: list[int] | None = None,
     seed: int = DEFAULT_SEED,
@@ -185,7 +173,8 @@ def run_benchmark(
     Args:
         dataset: 数据集名称。
         method: 检索链路，'baseline'（BGE 编码）或 'elf'（ELF 扩散增强）。
-        encoder_name: HuggingFace 编码器名称（文档侧，两条链路共用）。
+        encoder_name: HuggingFace 编码器名称（文档侧，仅 method='baseline' 生效；
+                      None 时使用 DEFAULT_ENCODER）。
         index_nlist: FAISS IVF 聚类中心数。
         k_values: 评估的 k 值列表。
         seed: 随机种子。
@@ -229,9 +218,7 @@ def run_benchmark(
                 f"shared 上下文的数据集 '{ctx.dataset}' 与参数 dataset='{dataset}' 不一致"
             )
         if ctx.method != method:
-            raise ValueError(
-                f"shared 上下文的链路 '{ctx.method}' 与参数 method='{method}' 不一致"
-            )
+            raise ValueError(f"shared 上下文的链路 '{ctx.method}' 与参数 method='{method}' 不一致")
     data = ctx.data
     encoder = ctx.encoder
     retriever = ctx.retriever

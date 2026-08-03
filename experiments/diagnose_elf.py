@@ -33,12 +33,13 @@ import faiss
 import numpy as np
 
 from src.baseline.benchmark import BenchmarkContext, build_benchmark_context
-from src.baseline.encoder import BaselineEncoder
 from src.config import METHOD_BASELINE, METHOD_ELF, SUPPORTED_DATASETS
 from src.elf.pipeline import ELFPipeline
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.orchestrator import ExperimentConfig, load_param_grid
+from src.utils.encoder_factory import create_encoder
 from src.utils.logger import get_logger
+from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
@@ -128,9 +129,7 @@ def _save_cached_vectors(
     """将文档向量与参数指纹写入磁盘缓存。"""
     cache_dir.mkdir(parents=True, exist_ok=True)
     meta_path, vec_path, ids_path = _cache_paths(cache_dir)
-    meta_path.write_text(
-        json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    meta_path.write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
     np.save(vec_path, vectors)
     ids_path.write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
     logger.info("文档向量已缓存: %d 篇文档 (%s)", len(ids), vec_path)
@@ -189,26 +188,11 @@ def _rebuild_context_from_vectors(
     set_seed(seed)
     data = load_dataset(dataset)
 
-    # 与 build_benchmark_context 相同的采样逻辑
+    # 与 build_benchmark_context 相同的采样逻辑（共用 sample_dataset）
     if sample is not None and sample < len(data.queries):
-        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
-        sampled_qids = qids_with_qrels[:sample]
-        referenced: set[str] = set()
-        for qid in sampled_qids:
-            referenced.update(data.qrels[qid].keys())
-        data = DatasetTriple(
-            queries={qid: data.queries[qid] for qid in sampled_qids},
-            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
-            qrels={qid: data.qrels[qid] for qid in sampled_qids},
-        )
-        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+        data = sample_dataset(data, sample)
 
-    if method == METHOD_ELF:
-        elf_pipeline = ELFPipeline()
-        encoder_obj: BaselineEncoder | ELFPipeline = elf_pipeline
-    else:
-        encoder_obj = BaselineEncoder(model_name=encoder)
-        elf_pipeline = None
+    encoder_obj, elf_pipeline = create_encoder(method, encoder)
     indexer = FAISSIndexer(dimension=vectors.shape[1], nlist=nlist)
     indexer.build(vectors, ids)
     retriever = Retriever(indexer)
@@ -222,9 +206,7 @@ def _rebuild_context_from_vectors(
     )
 
 
-def _encode_queries_baseline(
-    ctx: BenchmarkContext, query_ids: list[str]
-) -> dict[str, np.ndarray]:
+def _encode_queries_baseline(ctx: BenchmarkContext, query_ids: list[str]) -> dict[str, np.ndarray]:
     """baseline 查询向量:逐条 BGE 编码(与评测一致)。"""
     return {qid: ctx.encoder.encode(ctx.data.queries[qid]) for qid in query_ids}
 
@@ -255,24 +237,23 @@ def _encode_queries_elf(
     }
 
 
-def _encode_queries_elf_raw(
-    ctx: BenchmarkContext, query_ids: list[str]
-) -> dict[str, np.ndarray]:
+def _encode_queries_elf_raw(ctx: BenchmarkContext, query_ids: list[str]) -> dict[str, np.ndarray]:
     """ELF 编码器原始输出(不增强): 仅 T5 编码 + 投影, 跳过加噪/去噪。
 
     用于区分"编码空间错位"与"扩散破坏":若原始输出与文档向量已接近
     正交, 则根因在编码器空间, 与扩散参数无关。
+
+    前置条件: ctx 已由 _prepare_docs(..., method=METHOD_ELF) 构建,
+    ctx.elf_pipeline 非 None。
     """
-    if ctx.elf_pipeline is None:
-        ctx.elf_pipeline = ELFPipeline()
-    return {
-        qid: ctx.elf_pipeline.encode(ctx.data.queries[qid]) for qid in query_ids
-    }
+    assert ctx.elf_pipeline is not None, (
+        "_encode_queries_elf_raw 要求 ctx.elf_pipeline 已初始化；"
+        "请通过 _prepare_docs(..., method='elf') 构建上下文"
+    )
+    return {qid: ctx.elf_pipeline.encode(ctx.data.queries[qid]) for qid in query_ids}
 
 
-def _topk_from_retriever(
-    ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K
-) -> list[str]:
+def _topk_from_retriever(ctx: BenchmarkContext, qvec: np.ndarray, k: int = _TOP_K) -> list[str]:
     """检索 top-k 文档 id(与评测相同的 retriever.search 路径)。"""
     doc_ids_found, _ = ctx.retriever.search(qvec, k=k)
     return doc_ids_found
@@ -351,8 +332,11 @@ def _analyze_group(
 
 
 def _build_report(
-    dataset: str, sample: int | None, baseline_stats: dict[str, float],
-    elf_stats: dict[str, dict[str, float]], elf_params: list[dict[str, object]],
+    dataset: str,
+    sample: int | None,
+    baseline_stats: dict[str, float],
+    elf_stats: dict[str, dict[str, float]],
+    elf_params: list[dict[str, object]],
 ) -> str:
     """生成 Markdown 诊断报告。"""
     lines = [
@@ -393,16 +377,12 @@ def _build_report(
     ]
     if "elf-raw" in elf_stats:
         s = elf_stats["elf-raw"]
-        lines.append(
-            f"| elf-raw | 不增强(仅编码) | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |"
-        )
+        lines.append(f"| elf-raw | 不增强(仅编码) | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |")
     for p in elf_params:
         cid = str(p["id"])
         s = elf_stats[cid]
         param_str = f"{p['steps']}/{p['noise_t']}/{p['cfg_scale']}"
-        lines.append(
-            f"| {cid} | s={param_str} | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |"
-        )
+        lines.append(f"| {cid} | s={param_str} | {s['shift_cos']:.4f} | {s['shift_l2']:.4f} |")
 
     lines += [
         "",
@@ -448,8 +428,8 @@ def _main() -> int:
             "请传 --sample N(建议与评测一致)"
         )
 
-    out_dir = Path(args.output) if args.output else (
-        Path("experiments/outputs") / dataset / "diagnosis"
+    out_dir = (
+        Path(args.output) if args.output else (Path("experiments/outputs") / dataset / "diagnosis")
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -475,18 +455,15 @@ def _main() -> int:
         seed=seed,
     )
     query_ids = sorted(base_ctx.data.queries.keys())
-    logger.info("查询数: %d, 文档数: baseline=%d / elf=%d",
-                len(query_ids), len(base_ids), len(elf_ids))
+    logger.info(
+        "查询数: %d, 文档数: baseline=%d / elf=%d", len(query_ids), len(base_ids), len(elf_ids)
+    )
 
     # baseline 查询向量与其 top10 检索结果(作为 ELF 组的对照)
     base_qvecs = _encode_queries_baseline(base_ctx, query_ids)
     base_id_to_idx = {did: i for i, did in enumerate(base_ids)}
-    baseline_top10 = {
-        qid: _topk_from_retriever(base_ctx, base_qvecs[qid]) for qid in query_ids
-    }
-    baseline_stats = _analyze_group(
-        base_ctx, base_vectors, base_id_to_idx, query_ids, base_qvecs
-    )
+    baseline_top10 = {qid: _topk_from_retriever(base_ctx, base_qvecs[qid]) for qid in query_ids}
+    baseline_stats = _analyze_group(base_ctx, base_vectors, base_id_to_idx, query_ids, base_qvecs)
     logger.info("baseline 诊断完成: query_doc_sim=%.4f", baseline_stats["query_doc_sim"])
 
     # ELF 链路(文档为 ELF 编码, 与查询同空间)
@@ -496,24 +473,34 @@ def _main() -> int:
     logger.info("分析 elf-raw: ELF 编码器原始输出(不加噪/不去噪)")
     raw_qvecs = _encode_queries_elf_raw(elf_ctx, query_ids)
     elf_stats["elf-raw"] = _analyze_group(
-        elf_ctx, elf_vectors, elf_id_to_idx, query_ids,
-        raw_qvecs, base_qvecs, baseline_top10,
+        elf_ctx,
+        elf_vectors,
+        elf_id_to_idx,
+        query_ids,
+        raw_qvecs,
+        base_qvecs,
+        baseline_top10,
     )
     for params in config.elf_param_list:
         cid = str(params["id"])
         steps = int(params["steps"])
         noise_t = float(params["noise_t"])
         cfg_scale = float(params["cfg_scale"])
-        logger.info("分析 %s: steps=%d, noise_t=%.2f, cfg_scale=%.1f", cid, steps, noise_t, cfg_scale)
+        logger.info(
+            "分析 %s: steps=%d, noise_t=%.2f, cfg_scale=%.1f", cid, steps, noise_t, cfg_scale
+        )
         elf_qvecs = _encode_queries_elf(elf_ctx, query_ids, steps, noise_t, cfg_scale, seed)
         elf_stats[cid] = _analyze_group(
-            elf_ctx, elf_vectors, elf_id_to_idx, query_ids,
-            elf_qvecs, base_qvecs, baseline_top10,
+            elf_ctx,
+            elf_vectors,
+            elf_id_to_idx,
+            query_ids,
+            elf_qvecs,
+            base_qvecs,
+            baseline_top10,
         )
 
-    report_md = _build_report(
-        dataset, sample, baseline_stats, elf_stats, config.elf_param_list
-    )
+    report_md = _build_report(dataset, sample, baseline_stats, elf_stats, config.elf_param_list)
     summary = {
         "dataset": dataset,
         "sample": sample,
@@ -528,9 +515,7 @@ def _main() -> int:
     md_path = out_dir / "diagnosis.md"
     json_path = out_dir / "diagnosis.json"
     md_path.write_text(report_md, encoding="utf-8")
-    json_path.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("诊断完成 (%.1fs): %s / %s", time.perf_counter() - t0, json_path, md_path)
     print(report_md)

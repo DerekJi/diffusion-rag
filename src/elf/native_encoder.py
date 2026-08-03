@@ -269,7 +269,7 @@ def _load_elf_checkpoint(
         state = torch.load(checkpoint_file, map_location=device, weights_only=True)
 
         # 训练检查点格式：解包嵌套权重，优先 EMA 权重
-        weights: dict = state
+        weights: dict[str, object] = state
         source = "root"
         if isinstance(state, dict) and isinstance(state.get("params"), dict):
             ema = state.get("ema_params1")
@@ -290,8 +290,8 @@ def _load_elf_checkpoint(
             "decoder.weight",
             "embedding_proj.weight",
         ]:
-            if key in weights and hasattr(weights[key], "shape"):
-                ckpt_weight = weights[key]
+            ckpt_weight = weights.get(key)
+            if isinstance(ckpt_weight, torch.Tensor):
                 if ckpt_weight.shape == projection.weight.shape:
                     projection.weight.data.copy_(ckpt_weight)
                     logger.info("从 checkpoint 加载投影层权重 (key=%s, source=%s)", key, source)
