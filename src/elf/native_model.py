@@ -25,28 +25,30 @@ import math
 from pathlib import Path
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # 官方 checkpoint 路径与模型配置(config.yml 对应项)
-_DEFAULT_CHECKPOINT = Path("models") / "embedded-language-flows" / "ELF-B-owt-torch" / "checkpoint_95085"
-_HIDDEN_SIZE = 768          # DiT hidden (blocks 维度)
-_DEPTH = 12                 # ELF-B
+_DEFAULT_CHECKPOINT = (
+    Path("models") / "embedded-language-flows" / "ELF-B-owt-torch" / "checkpoint_95085"
+)
+_HIDDEN_SIZE = 768  # DiT hidden (blocks 维度)
+_DEPTH = 12  # ELF-B
 _NUM_HEADS = 12
 _HEAD_DIM = _HIDDEN_SIZE // _NUM_HEADS  # 64
-_TEXT_ENCODER_DIM = 512     # T5 hidden
+_TEXT_ENCODER_DIM = 512  # T5 hidden
 _BOTTLENECK_DIM = 128
 _NUM_TIME_TOKENS = 4
 _NUM_SELF_COND_CFG_TOKENS = 4
 _NUM_MODE_TOKENS = 4
-_LATENT_STD = 0.2           # config latent_std(用于 latent 归一化)
-_DENOISER_NOISE_SCALE = 2.0  # config denoiser_noise_scale
-_T_EPS = 0.05               # config t_eps
-_VOCAB_SIZE = 32100         # T5 词表(unembed 分支)
+LATENT_STD = 0.2  # config latent_std(用于 latent 归一化)
+DENOISER_NOISE_SCALE = 2.0  # config denoiser_noise_scale
+T_EPS = 0.05  # config t_eps
+_VOCAB_SIZE = 32100  # T5 词表(unembed 分支)
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -151,7 +153,7 @@ class Attention(nn.Module):
             k = rope_fn(k)
         x = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         x = x.transpose(1, 2).reshape(bsz, seq_len, channels)
-        return self.proj(x)
+        return self.proj(x)  # type: ignore[no-any-return]
 
 
 class SwiGLUFFN(nn.Module):
@@ -163,7 +165,7 @@ class SwiGLUFFN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x1, x2 = self.w12(x).chunk(2, dim=-1)
-        return self.w3(F.silu(x1) * x2)
+        return self.w3(F.silu(x1) * x2)  # type: ignore[no-any-return]
 
 
 class ELFBlock(nn.Module):
@@ -210,7 +212,9 @@ class TimestepEmbedder(nn.Module):
         return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        return self.mlp(self.timestep_embedding(t, self.frequency_embedding_size))
+        return self.mlp(  # type: ignore[no-any-return]
+            self.timestep_embedding(t, self.frequency_embedding_size)
+        )
 
 
 class BottleneckTextProj(nn.Module):
@@ -222,7 +226,7 @@ class BottleneckTextProj(nn.Module):
         self.proj2 = nn.Linear(bottleneck_dim, hidden_size, bias=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.proj2(self.proj1(x))
+        return self.proj2(self.proj1(x))  # type: ignore[no-any-return]
 
 
 class FinalLayer(nn.Module):
@@ -234,7 +238,7 @@ class FinalLayer(nn.Module):
         self.linear = nn.Linear(hidden_size, out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(self.norm_final(x))
+        return self.linear(self.norm_final(x))  # type: ignore[no-any-return]
 
 
 class ELFDenoiser(nn.Module):
@@ -245,10 +249,12 @@ class ELFDenoiser(nn.Module):
 
     def __init__(
         self,
-        checkpoint_path: str | Path = str(_DEFAULT_CHECKPOINT),
+        checkpoint_path: str | Path | None = None,
         device: str = "cpu",
     ) -> None:
         super().__init__()
+        if checkpoint_path is None:
+            checkpoint_path = str(_DEFAULT_CHECKPOINT)
         self.text_encoder_dim = _TEXT_ENCODER_DIM
         self.max_length = 1024
         self.hidden_size = _HIDDEN_SIZE
@@ -267,9 +273,7 @@ class ELFDenoiser(nn.Module):
         )
         self.mode_tokens = nn.Parameter(torch.empty(1, _NUM_MODE_TOKENS, _HIDDEN_SIZE))
 
-        prefix_total = (
-            _NUM_MODE_TOKENS + _NUM_TIME_TOKENS + _NUM_SELF_COND_CFG_TOKENS
-        )
+        prefix_total = _NUM_MODE_TOKENS + _NUM_TIME_TOKENS + _NUM_SELF_COND_CFG_TOKENS
         self.feat_rope = TextRotaryEmbeddingFast(
             dim=_HEAD_DIM,
             pt_seq_len=self.max_length,
@@ -324,10 +328,10 @@ class ELFDenoiser(nn.Module):
             normalized[norm_key] = value
 
         missing, unexpected = self.load_state_dict(normalized, strict=False)
-        if missing or unexpected:
-            raise RuntimeError(
-                f"ELFDenoiser 权重不匹配: missing={missing[:10]} unexpected={unexpected[:10]}"
-            )
+        if missing:
+            raise RuntimeError(f"ELFDenoiser 权重不匹配: missing keys={missing[:10]}")
+        if unexpected:
+            logger.warning("ELFDenoiser checkpoint 含非预期权重键(将忽略): %s", unexpected[:10])
         logger.info("ELFDenoiser checkpoint 加载成功 (%s)", path)
 
     # ── 前向 ──────────────────────────────────
@@ -338,6 +342,15 @@ class ELFDenoiser(nn.Module):
     def build_context(
         self, t: torch.Tensor, self_cond_cfg_scale: torch.Tensor | None = None
     ) -> torch.Tensor:
+        """构造 DiT 输入前缀: 时间步嵌入 token + 可选 self-cond cfg token。
+
+        Args:
+            t: 时间步, (B,)。
+            self_cond_cfg_scale: self-cond cfg 标量 (B,), 可选。
+
+        Returns:
+            前缀张量, shape (B, num_prefix_tokens, hidden_size)。
+        """
         prefix_tokens = [self._make_prefix(self.t_embedder(t), self.t_emb_tokens)]
         if self_cond_cfg_scale is not None:
             prefix_tokens.append(
@@ -388,4 +401,4 @@ class ELFDenoiser(nn.Module):
             x = block(x, rope_fn=self.feat_rope)
 
         x = x[:, prefix_len + model_mode_offset :]
-        return self.final_layer(x.float())
+        return self.final_layer(x.float())  # type: ignore[no-any-return]

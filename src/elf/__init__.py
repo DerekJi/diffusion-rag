@@ -7,6 +7,7 @@ from src.elf.diffusion import add_noise, cfg_guide, denoise, denoise_with_cfg, s
 from src.elf.encoder import ELFEncoder
 from src.elf.model_wrapper import ELFModelWrapper, create_model_pair
 from src.elf.native_encoder import ELFNativeEncoder
+from src.elf.native_model import ELFDenoiser
 from src.elf.pipeline import ELFPipeline
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "create_model_pair",
     "denoise",
     "denoise_with_cfg",
+    "ELFDenoiser",
     "ELFEncoder",
     "ELFModelWrapper",
     "ELFNativeEncoder",

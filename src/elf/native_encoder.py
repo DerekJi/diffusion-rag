@@ -155,6 +155,7 @@ class ELFNativeEncoder:
 
     # ── 内部方法 ──────────────────────────────
 
+    @torch.no_grad()
     def _pooled_torch(self, texts: list[str], batch_size: int) -> NDArray[np.float32]:
         """T5 编码 + mean pooling, 输出 (n, 512) raw hidden(未投影)。
 
@@ -182,6 +183,7 @@ class ELFNativeEncoder:
 
         return np.asarray(np.concatenate(pooled_list, axis=0), dtype=np.float32)
 
+    @torch.no_grad()
     def encode_pooled(self, text: str) -> NDArray[np.float32]:
         """编码为 512-dim T5 mean-pooled hidden(未投影, 供 denoiser 增强)。
 
@@ -195,14 +197,22 @@ class ELFNativeEncoder:
             raise ValueError("输入文本不能为空字符串")
         return self._pooled_torch([text], batch_size=1).reshape(-1)
 
+    @torch.no_grad()
     def embed_from_pooled(self, pooled: NDArray[np.float32]) -> NDArray[np.float32]:
-        """512-dim pooled hidden → 768-dim L2 归一化检索嵌入。"""
+        """512-dim pooled hidden → 768-dim L2 归一化检索嵌入。
+
+        支持单条 (512,) 和批量 (N, 512) 输入。批量输入返回 (N, 768)。
+        """
         tensor = torch.from_numpy(np.asarray(pooled, dtype=np.float32)).to(self.device)
         if tensor.ndim == 1:
             tensor = tensor.unsqueeze(0)
+            single = True
+        else:
+            single = False
         projected = self._projection(tensor)
         normalized = torch.nn.functional.normalize(projected, p=2, dim=1)
-        return normalized.detach().cpu().numpy().reshape(-1)
+        result = normalized.detach().cpu().numpy()
+        return result.reshape(-1) if single else result
 
     def _encode_torch(self, texts: list[str], batch_size: int) -> NDArray[np.float32]:
         """内部批量编码（PyTorch 推理）。
@@ -214,12 +224,9 @@ class ELFNativeEncoder:
         Returns:
             shape (len(texts), 768) float32 数组。
         """
-        all_vecs: list[NDArray[np.float32]] = []
-
-        for pooled in self._pooled_torch(texts, batch_size).reshape(-1, T5_HIDDEN_DIM):
-            all_vecs.append(self.embed_from_pooled(pooled))
-
-        return np.asarray(all_vecs, dtype=np.float32)
+        # 批量投影: 一次处理整个 batch 的 pooled hidden, 避免逐条小矩阵乘法
+        pooled_batch = self._pooled_torch(texts, batch_size)  # (N, 512)
+        return self.embed_from_pooled(pooled_batch)  # (N, 768)
 
 
 # ──────────────────────────────────────────────
