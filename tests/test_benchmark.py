@@ -14,7 +14,7 @@ import pytest
 from numpy.typing import NDArray
 
 import src.baseline.benchmark as benchmark
-from src.baseline.benchmark import run_benchmark
+from src.baseline.benchmark import BenchmarkContext, run_benchmark
 from src.config import METHOD_BASELINE, METHOD_ELF
 from src.evaluation.dataset import DatasetTriple
 
@@ -45,6 +45,7 @@ class TestRunBenchmark:
 
         doc_encoder = MagicMock()
         doc_encoder.encode.side_effect = _encode
+        self._doc_encoder = doc_encoder
 
         self._elf_pipeline_mock = MagicMock()
         self._elf_pipeline_mock.enhance.return_value = fixed_vec
@@ -126,6 +127,49 @@ class TestRunBenchmark:
             "rng"
         ].bit_generator.state
         assert first_rng_state == second_rng_state
+
+    # ── 共享上下文 (shared) ─────────────────────
+
+    def test_shared_context_skips_preparation_and_reuses_pipeline(
+        self, tmp_path: Path
+    ) -> None:
+        """传入 shared 时跳过数据准备;ELF pipeline 惰性创建且跨组复用。"""
+        retriever = MagicMock()
+        retriever.search.side_effect = lambda qvec, k: (
+            [f"d{i}" for i in range(min(k, 8))],
+            [1.0] * min(k, 8),
+        )
+        ctx = BenchmarkContext(
+            dataset="nfcorpus",
+            data=_make_fake_data(),
+            encoder=self._doc_encoder,
+            retriever=retriever,
+        )
+        with (
+            patch("src.baseline.benchmark.build_benchmark_context") as mock_build,
+            patch(
+                "src.baseline.benchmark.ELFPipeline",
+                return_value=self._elf_pipeline_mock,
+            ) as factory,
+        ):
+            run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir), shared=ctx)
+            run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir), shared=ctx)
+
+        assert mock_build.call_count == 0  # 跳过数据加载/文档编码/建索引
+        assert factory.call_count == 1  # ELF 模型只加载一次
+        assert self._elf_pipeline_mock.enhance.call_count == 8  # 2 次运行 × 4 条 query
+        assert ctx.elf_pipeline is self._elf_pipeline_mock  # 缓存在上下文中
+
+    def test_shared_context_dataset_mismatch_raises(self, tmp_path: Path) -> None:
+        """shared 上下文数据集与参数不一致时抛出 ValueError（防止写错输出目录）。"""
+        ctx = BenchmarkContext(
+            dataset="msmarco",
+            data=_make_fake_data(),
+            encoder=self._doc_encoder,
+            retriever=MagicMock(),
+        )
+        with pytest.raises(ValueError, match="不一致"):
+            run_benchmark(dataset="nfcorpus", output_dir=str(self._output_dir), shared=ctx)
 
     # ── 采样 / 参数校验 ───────────────────────
 

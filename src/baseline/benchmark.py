@@ -13,6 +13,7 @@ Phase 3.1 起支持双链路一键切换（仅替换查询编码方式）:
 import argparse
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,86 @@ from src.vector_store.retriever import Retriever
 logger = get_logger(__name__)
 
 
+@dataclass
+class BenchmarkContext:
+    """一次构建、多组共享的评测上下文。
+
+    包含采样后的数据集、文档编码器与检索器，供 run_grid 的
+    baseline + 多组 ELF 复用，避免每组重复加载数据集、编码文档、
+    建索引与加载 ELF 模型（文档侧编码在两条链路上完全一致）。
+
+    Attributes:
+        dataset: 上下文对应的数据集名称（用于 shared 模式下的一致性校验）。
+        data: 采样后的数据集三元组。
+        encoder: 文档侧 BGE 编码器（同时用于 baseline 查询编码）。
+        retriever: 基于文档向量构建的检索器。
+        elf_pipeline: 惰性创建的 ELFPipeline，首个 ELF 组加载后复用。
+    """
+
+    dataset: str
+    data: DatasetTriple
+    encoder: BaselineEncoder
+    retriever: Retriever
+    elf_pipeline: ELFPipeline | None = None
+
+
+def build_benchmark_context(
+    dataset: str = "nfcorpus",
+    encoder_name: str = DEFAULT_ENCODER,
+    index_nlist: int = DEFAULT_INDEX_NLIST,
+    seed: int = DEFAULT_SEED,
+    sample: int | None = None,
+) -> BenchmarkContext:
+    """加载数据集、采样并编码文档建索引，返回可复用的评测上下文。
+
+    等价于 run_benchmark() 的"数据准备"阶段（加载 → 采样 → 编码
+    全部文档 → 构建 FAISS 索引），抽出来以便参数网格的 13 组评测
+    只执行一次，其余组通过 run_benchmark(shared=ctx) 直接复用。
+
+    Args:
+        dataset: 数据集名称。
+        encoder_name: 文档侧编码器名称。
+        index_nlist: FAISS IVF 聚类中心数。
+        seed: 随机种子。
+        sample: 仅取前 N 条有 qrels 的 query，None 为全量。
+
+    Returns:
+        构建完成的 BenchmarkContext。
+    """
+    set_seed(seed)
+
+    data = load_dataset(dataset)
+
+    # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
+    if sample is not None and sample < len(data.queries):
+        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
+        sampled_qids = qids_with_qrels[:sample]
+        referenced: set[str] = set()
+        for qid in sampled_qids:
+            referenced.update(data.qrels[qid].keys())
+        data = DatasetTriple(
+            queries={qid: data.queries[qid] for qid in sampled_qids},
+            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
+            qrels={qid: data.qrels[qid] for qid in sampled_qids},
+        )
+        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+
+    logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
+
+    # 编码文档 + 建索引（双链路共享）
+    encoder = BaselineEncoder(model_name=encoder_name)
+    doc_ids = sorted(data.corpus.keys())
+    doc_texts = [data.corpus[did] for did in doc_ids]
+
+    logger.info("编码 %d 篇文档...", len(doc_texts))
+    doc_vectors = encoder.encode_batch(doc_texts)
+
+    indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
+    indexer.build(doc_vectors, doc_ids)
+    retriever = Retriever(indexer)
+    return BenchmarkContext(dataset=dataset, data=data, encoder=encoder, retriever=retriever)
+
+
 def run_benchmark(
     dataset: str = "nfcorpus",
     method: str = METHOD_BASELINE,
@@ -57,16 +138,16 @@ def run_benchmark(
     elf_steps: int = DEFAULT_ELF_STEPS,
     elf_noise_t: float = DEFAULT_ELF_NOISE_T,
     elf_cfg_scale: float = DEFAULT_ELF_CFG_SCALE,
+    shared: BenchmarkContext | None = None,
 ) -> pd.DataFrame:
     """运行完整检索评测流程（Baseline / ELF 双链路）。
 
     流程:
-        1. 固定随机种子
-        2. 加载数据集
-        3. 用 BaselineEncoder 编码所有文档 → 构建 FAISS 索引（双链路共享）
-        4. 按 method 编码所有查询（仅此步切换链路）
-        5. 逐条检索 + 计算指标
-        6. 汇总结果并保存为 CSV（baseline.csv / elf.csv）
+        1. 准备数据与索引：加载数据集 → 采样 → 编码全部文档 → 建索引
+           （传入 shared 时跳过，直接复用上下文中的数据与检索器）
+        2. 按 method 编码所有查询（仅此步切换链路）
+        3. 逐条检索 + 计算指标
+        4. 汇总结果并保存为 CSV（baseline.csv / elf.csv）
 
     Args:
         dataset: 数据集名称。
@@ -80,6 +161,8 @@ def run_benchmark(
         elf_steps: ELF 去噪步数（仅 method='elf' 生效）。
         elf_noise_t: ELF 加噪强度 t ∈ [0, 1]（仅 method='elf' 生效）。
         elf_cfg_scale: ELF CFG 引导强度（仅 method='elf' 生效）。
+        shared: 预构建的共享上下文（数据集 + 编码器 + 检索器 + ELF pipeline）。
+                传入时跳过数据加载 / 文档编码 / 建索引，供参数网格多组复用。
 
     Returns:
         包含聚合指标的 DataFrame（一行，列含 dataset/method 及各 k 指标）。
@@ -95,50 +178,38 @@ def run_benchmark(
 
     set_seed(seed)
 
-    # 1. 加载数据集
-    data = load_dataset(dataset)
-
-    # 采样模式：取前 sample 条有 qrels 的 query 及其相关文档
-    # 使用新变量 sample_data，不修改原始 data
-    sample_data = data
-    if sample is not None and sample < len(data.queries):
-        qids_with_qrels = sorted(q for q in data.queries if q in data.qrels)
-        sampled_qids = qids_with_qrels[:sample]
-        referenced: set[str] = set()
-        for qid in sampled_qids:
-            referenced.update(data.qrels[qid].keys())
-        sample_data = DatasetTriple(
-            queries={qid: data.queries[qid] for qid in sampled_qids},
-            corpus={did: data.corpus[did] for did in referenced if did in data.corpus},
-            qrels={qid: data.qrels[qid] for qid in sampled_qids},
+    # 1. 数据准备（加载 + 采样 + 编码文档 + 建索引）
+    #    传入 shared 时复用预构建上下文，跳过最耗时的重复计算
+    if shared is None:
+        ctx = build_benchmark_context(
+            dataset=dataset,
+            encoder_name=encoder_name,
+            index_nlist=index_nlist,
+            seed=seed,
+            sample=sample,
         )
-        data = sample_data
-        logger.info("采样模式: %d queries, %d docs", len(data.queries), len(data.corpus))
+    else:
+        ctx = shared
+        if ctx.dataset != dataset:
+            raise ValueError(
+                f"shared 上下文的数据集 '{ctx.dataset}' 与参数 dataset='{dataset}' 不一致"
+            )
+    data = ctx.data
+    encoder = ctx.encoder
+    retriever = ctx.retriever
 
-    logger.info("数据集 %s: %d queries, %d docs", dataset, len(data.queries), len(data.corpus))
-
-    # 2. 编码文档 + 建索引
-    encoder = BaselineEncoder(model_name=encoder_name)
-    doc_ids = sorted(data.corpus.keys())
-    doc_texts = [data.corpus[did] for did in doc_ids]
-
-    logger.info("编码 %d 篇文档...", len(doc_texts))
-    doc_vectors = encoder.encode_batch(doc_texts)
-
-    indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
-    indexer.build(doc_vectors, doc_ids)
-    retriever = Retriever(indexer)
-
-    # 3. 编码查询 + 检索（仅此处按 method 切换链路）
+    # 2. 编码查询 + 检索（仅此处按 method 切换链路）
     query_ids = sorted(data.queries.keys())
 
     query_encoder: Callable[[str], NDArray[np.float32]]
     if method == METHOD_ELF:
-        try:
-            elf_pipeline = ELFPipeline()
-        except Exception as e:
-            logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
-            raise RuntimeError(f"ELF 模型加载失败: {e}") from e
+        if ctx.elf_pipeline is None:
+            try:
+                ctx.elf_pipeline = ELFPipeline()
+            except Exception as e:
+                logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
+                raise RuntimeError(f"ELF 模型加载失败: {e}") from e
+        elf_pipeline = ctx.elf_pipeline
         rng = np.random.default_rng(seed)
         logger.info(
             "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",

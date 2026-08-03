@@ -1,11 +1,14 @@
 """评测编排器 + 报表生成器单元测试。
 
-mock run_benchmark / load_param_grid 等外部依赖，无需网络与模型下载。
+mock run_benchmark / load_param_grid / build_benchmark_context 等外部依赖，
+无需网络与模型下载。
 """
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -16,6 +19,31 @@ from src.evaluation.reporter import write_json_summary, write_summary_csv
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GRID_YAML = _REPO_ROOT / "experiments" / "configs" / "param_grid.yaml"
+
+
+@contextmanager
+def _patched_benchmark(
+    side_effect: list[pd.DataFrame] | None = None,
+    return_value: pd.DataFrame | None = None,
+) -> Iterator[tuple[MagicMock, MagicMock]]:
+    """同时 mock build_benchmark_context 与 run_benchmark。
+
+    run_grid 现在会先构建共享上下文（真实实现会加载数据集 + 编码文档），
+    测试中必须一并 mock，避免触发模型加载。返回 (mock_ctx, mock_run_benchmark)。
+    """
+    mock_ctx = MagicMock()
+    with (
+        patch(
+            "src.evaluation.orchestrator.build_benchmark_context",
+            return_value=mock_ctx,
+        ),
+        patch(
+            "src.evaluation.orchestrator.run_benchmark",
+            side_effect=side_effect,
+            return_value=return_value,
+        ) as mock_rb,
+    ):
+        yield mock_ctx, mock_rb
 
 
 def _fake_summary_df(method: str = METHOD_BASELINE, **extra: object) -> pd.DataFrame:
@@ -131,12 +159,13 @@ class TestRunGrid:
     def test_runs_baseline_then_each_elf_group(self, tmp_path: Path) -> None:
         """自动遍历 1 baseline + 每组 ELF 参数，参数正确透传。"""
         config = _make_config(tmp_path, n_groups=2)
-        with patch("src.evaluation.orchestrator.run_benchmark") as mock_rb:
-            mock_rb.side_effect = [
+        with _patched_benchmark(
+            side_effect=[
                 _fake_summary_df(method=METHOD_BASELINE),
                 _fake_summary_df(method=METHOD_ELF, steps=1, noise_t=0.3, cfg_scale=1.0),
                 _fake_summary_df(method=METHOD_ELF, steps=2, noise_t=0.3, cfg_scale=1.0),
             ]
+        ) as (mock_ctx, mock_rb):
             summary = run_grid(config)
 
         assert mock_rb.call_count == 3
@@ -157,13 +186,37 @@ class TestRunGrid:
             METHOD_ELF,
         ]
 
+    def test_builds_context_once_and_shares_it(self, tmp_path: Path) -> None:
+        """共享上下文只构建一次，且透传给所有 run_benchmark 调用。"""
+        config = _make_config(tmp_path, n_groups=2)
+        with (
+            patch(
+                "src.evaluation.orchestrator.build_benchmark_context",
+                return_value=MagicMock(),
+            ) as mock_build,
+            patch(
+                "src.evaluation.orchestrator.run_benchmark",
+                side_effect=[
+                    _fake_summary_df(method=METHOD_BASELINE),
+                    _fake_summary_df(method=METHOD_ELF, steps=1, noise_t=0.3, cfg_scale=1.0),
+                    _fake_summary_df(method=METHOD_ELF, steps=2, noise_t=0.3, cfg_scale=1.0),
+                ],
+            ) as mock_rb,
+        ):
+            run_grid(config)
+
+        # 文档编码 + 建索引只做一遍（13 组共享同一份上下文）
+        assert mock_build.call_count == 1
+        assert mock_rb.call_count == 3
+        expected_ctx = mock_build.return_value
+        assert all(call.kwargs["shared"] is expected_ctx for call in mock_rb.call_args_list)
+
     def test_sample_argument_overrides_config(self, tmp_path: Path) -> None:
         """显式传入的 sample 覆盖 config.sample。"""
         config = _make_config(tmp_path, n_groups=1)
-        with patch(
-            "src.evaluation.orchestrator.run_benchmark",
+        with _patched_benchmark(
             return_value=_fake_summary_df(method=METHOD_BASELINE),
-        ) as mock_rb:
+        ) as (_, mock_rb):
             run_grid(config, sample=2)
         assert mock_rb.call_args_list[0].kwargs["sample"] == 2
 
@@ -175,7 +228,7 @@ class TestRunGrid:
         elf.loc[0, "recall@10"] = 0.55
         elf.loc[0, "mrr"] = 0.30
         elf.loc[0, "ndcg@10"] = 0.44
-        with patch("src.evaluation.orchestrator.run_benchmark", side_effect=[base, elf]):
+        with _patched_benchmark(side_effect=[base, elf]):
             summary = run_grid(config)
 
         assert summary["vs_baseline_recall@10_delta(%)"].tolist() == pytest.approx([0.0, 10.0])
@@ -185,8 +238,7 @@ class TestRunGrid:
     def test_wall_clock_and_query_count_recorded(self, tmp_path: Path) -> None:
         """n_queries 与 wall_clock_per_query_ms 两列存在且为有限值。"""
         config = _make_config(tmp_path, n_groups=1)
-        with patch(
-            "src.evaluation.orchestrator.run_benchmark",
+        with _patched_benchmark(
             side_effect=[
                 _fake_summary_df(method=METHOD_BASELINE),
                 _fake_summary_df(method=METHOD_ELF, steps=1, noise_t=0.3, cfg_scale=1.0),
@@ -212,8 +264,7 @@ class TestReporter:
     def _run_summary(self, tmp_path: Path) -> pd.DataFrame:
         """通过 run_grid 构造含 baseline + 1 组 ELF 的汇总表。"""
         config = _make_config(tmp_path, n_groups=1)
-        with patch(
-            "src.evaluation.orchestrator.run_benchmark",
+        with _patched_benchmark(
             side_effect=[
                 _fake_summary_df(method=METHOD_BASELINE),
                 _fake_summary_df(method=METHOD_ELF, steps=1, noise_t=0.3, cfg_scale=1.0),
@@ -253,8 +304,7 @@ class TestReporter:
         low = _fake_summary_df(method=METHOD_ELF, steps=1, noise_t=0.3, cfg_scale=1.0)
         high = _fake_summary_df(method=METHOD_ELF, steps=2, noise_t=0.4, cfg_scale=2.0)
         high.loc[0, "recall@10"] = 0.7
-        with patch(
-            "src.evaluation.orchestrator.run_benchmark",
+        with _patched_benchmark(
             side_effect=[
                 _fake_summary_df(method=METHOD_BASELINE),
                 low,

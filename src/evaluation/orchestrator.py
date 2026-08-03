@@ -23,7 +23,11 @@ from typing import cast
 import pandas as pd
 import yaml
 
-from src.baseline.benchmark import run_benchmark
+from src.baseline.benchmark import (
+    BenchmarkContext,
+    build_benchmark_context,
+    run_benchmark,
+)
 from src.config import (
     DEFAULT_ELF_CFG_SCALE,
     DEFAULT_ELF_NOISE_T,
@@ -167,8 +171,24 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
 
     rows: list[dict[str, object]] = []
 
+    # 一次性构建共享上下文：加载数据集 + 采样 + 编码全部文档 + 建索引。
+    # 13 组评测（1 baseline + 12 ELF）复用同一份文档向量与索引，
+    # 避免每组重复编码文档（CPU 上每组约 8.5 分钟的重复计算）。
+    logger.info("[grid] 构建共享评测上下文 (加载数据集 + 编码文档 + 建索引)...")
+    ctx = build_benchmark_context(
+        dataset=config.dataset,
+        encoder_name=config.encoder,
+        index_nlist=config.index_nlist,
+        seed=config.seed,
+        sample=effective_sample,
+    )
+
     logger.info("[grid] 运行 Baseline 对照组")
-    rows.append(_run_group(config, method=METHOD_BASELINE, sample=effective_sample))
+    rows.append(
+        _run_group(
+            config, method=METHOD_BASELINE, sample=effective_sample, shared=ctx
+        )
+    )
 
     for params in config.elf_param_list:
         logger.info(
@@ -179,7 +199,13 @@ def run_grid(config: ExperimentConfig, sample: int | None = None) -> pd.DataFram
             params["cfg_scale"],
         )
         rows.append(
-            _run_group(config, method=METHOD_ELF, sample=effective_sample, elf_params=params)
+            _run_group(
+                config,
+                method=METHOD_ELF,
+                sample=effective_sample,
+                elf_params=params,
+                shared=ctx,
+            )
         )
 
     summary = _add_baseline_deltas(pd.DataFrame(rows))
@@ -194,6 +220,7 @@ def _run_group(
     method: str,
     sample: int | None,
     elf_params: dict[str, object] | None = None,
+    shared: BenchmarkContext | None = None,
 ) -> dict[str, object]:
     """运行单个参数组并返回指标行（含 config_id / avg_latency_ms / n_queries）。
 
@@ -202,6 +229,7 @@ def _run_group(
         method: 检索链路，'baseline' 或 'elf'。
         sample: 采样查询数，None 为全量。
         elf_params: ELF 参数组（id/steps/noise_t/cfg_scale），仅 method='elf' 需要。
+        shared: 预构建的共享评测上下文，传入时跳过数据加载 / 文档编码 / 建索引。
 
     Returns:
         该组聚合指标字典，作为汇总表的一行。
@@ -230,6 +258,7 @@ def _run_group(
             elf_steps=cast(int, elf_params["steps"]),
             elf_noise_t=cast(float, elf_params["noise_t"]),
             elf_cfg_scale=cast(float, elf_params["cfg_scale"]),
+            shared=shared,
         )
         config_id = str(elf_params["id"])
     else:
@@ -242,6 +271,7 @@ def _run_group(
             seed=config.seed,
             output_dir=config.output_dir,
             sample=sample,
+            shared=shared,
         )
         config_id = "baseline"
     elapsed_s = time.perf_counter() - t0
