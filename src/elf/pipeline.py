@@ -448,8 +448,8 @@ class ELFPipeline:
 
         # 与原始编码 blend
         vec = raw * (1.0 - blend_alpha) + denoised * blend_alpha
-        norms = np.linalg.norm(vec, axis=1, keepdims=True)
-        safe_norms = np.where(norms > 1e-8, norms, 1.0)
+        norms: NDArray[np.float32] = np.linalg.norm(vec, axis=1, keepdims=True)
+        safe_norms: NDArray[np.float32] = np.where(norms > 1e-8, norms, 1.0)
         vec = (vec / safe_norms).astype(np.float32)
 
         logger.debug(

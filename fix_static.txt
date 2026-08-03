@@ -1,8 +1,0 @@
-项目静态检查或测试失败。请读取以上错误信息，逐项修复：
-
-1. 修复代码格式 / 类型错误 / 测试失败
-2. 运行 black . --line-length 100 && isort .
-3. 运行 pytest tests/ -q -m "not slow" 确认通过
-4. 重复直到全部绿色
-
-遵循 .reasonix/commands/fix-bug.md 的修复流程。
