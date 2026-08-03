@@ -331,6 +331,9 @@ jobs:
           git config --global user.email "ai-developer@github.com"
 
           if [ -n "$(git status --porcelain)" ]; then
+            # 移除 CI 临时产物(大 diff/prompt 文件), 防止超 GitHub 100MB 限制
+            rm -f pr_changes.diff review_prompt.txt fix_review.txt fix_static.txt repair.txt repair2.txt
+            rm -rf .temp
             git add .
             git commit -m "fix: auto-fix pipeline
 
