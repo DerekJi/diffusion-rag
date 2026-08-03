@@ -72,12 +72,12 @@ class TestAddNoise:
         assert np.allclose(z_t, z_0, atol=1e-6)
 
     def test_t_one_full_noise(self) -> None:
-        """t=1 时输出与输入显著不同。"""
+        """t=1 时输出与输入显著不同(范数距离 ≈ 1, 即噪声能量与信号同量级)。"""
         z_0 = np.random.randn(768).astype(np.float32)
         z_0 /= np.linalg.norm(z_0)
         z_t = add_noise(z_0, t=1.0, rng=np.random.default_rng(42))
-        # 加噪后不再是单位范数
-        assert not np.allclose(z_t, z_0, atol=0.5)
+        # 修正噪声尺度后 t=1 的噪声能量 = 信号能量, 范数距离 ≈ 1
+        assert np.linalg.norm(z_t - z_0) > 0.5
 
     def test_noise_level_increasing(self) -> None:
         """t 越大，噪声水平越高（与原始向量的距离越大）。"""
@@ -100,12 +100,13 @@ class TestAddNoise:
         assert np.allclose(z_t1, z_t2, atol=1e-6)
 
     def test_different_seed_different_noise(self) -> None:
-        """不同种子产生不同噪声。"""
+        """不同种子产生不同噪声(范数距离显著)。"""
         z_0 = np.random.randn(768).astype(np.float32)
         z_0 /= np.linalg.norm(z_0)
         z_t1 = add_noise(z_0.copy(), t=0.5, rng=np.random.default_rng(42))
         z_t2 = add_noise(z_0.copy(), t=0.5, rng=np.random.default_rng(99))
-        assert not np.allclose(z_t1, z_t2, atol=0.1)
+        # 修正噪声尺度后单元素差异很小, 用范数距离判定噪声不同
+        assert np.linalg.norm(z_t1 - z_t2) > 0.1
 
     def test_default_rng(self) -> None:
         """默认 rng=None 时不应报错。"""

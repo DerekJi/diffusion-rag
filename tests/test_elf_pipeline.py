@@ -276,7 +276,7 @@ class TestELFPipeline:
         assert np.allclose(v1, v2, atol=1e-5)
 
     def test_different_seed_different(self) -> None:
-        """不同种子产生不同输出。"""
+        """不同种子产生不同输出(范数距离显著)。"""
         pipe = ELFPipeline(device="cpu")
         v1 = pipe.enhance(
             "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(42)
@@ -284,7 +284,8 @@ class TestELFPipeline:
         v2 = pipe.enhance(
             "query", steps=2, noise_t=0.5, cfg_scale=2.0, rng=np.random.default_rng(99)
         )
-        assert not np.allclose(v1, v2, atol=0.1)
+        # 修正噪声尺度后单元素差异小, 用范数距离判定输出不同
+        assert np.linalg.norm(v1 - v2) > 0.05
 
     # ── 不同参数 ───────────────────────────
 
