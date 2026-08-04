@@ -48,8 +48,9 @@ class TestTokenIndex:
     def test_mismatched_lengths_raise(self) -> None:
         """doc_ids 与 tokens 数量不一致时抛 ValueError。"""
         with pytest.raises(ValueError, match="一致"):
-            TokenIndex(["d0"], np.zeros((2, 4, 8), dtype=np.float32),
-                       np.ones((2, 4), dtype=np.float32))
+            TokenIndex(
+                ["d0"], np.zeros((2, 4, 8), dtype=np.float32), np.ones((2, 4), dtype=np.float32)
+            )
 
     def test_zero_tokens_stay_zero(self) -> None:
         """零 token 向量归一化后保持为零(不产生 NaN)。"""

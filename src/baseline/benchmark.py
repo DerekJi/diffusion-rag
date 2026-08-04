@@ -35,6 +35,7 @@ from src.config import (
     SUPPORTED_DATASETS,
     SUPPORTED_METHODS,
 )
+from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.pipeline import ELFPipeline
 from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 from src.evaluation.dataset import DatasetTriple, load_dataset
@@ -108,6 +109,8 @@ def build_benchmark_context(
         index_nlist: FAISS IVF 聚类中心数。
         seed: 随机种子。
         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
+        use_token_retrieval: 启用 ColBERT 式多 token 检索（仅 method='elf' 生效）。
+        max_tokens: token 序列截断长度（默认 64，仅 use_token_retrieval 时生效）。
 
     Returns:
         构建完成的 BenchmarkContext。
@@ -149,9 +152,10 @@ def build_benchmark_context(
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
         assert elf_pipeline is not None
-        index = TokenIndex.build(
-            elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens
-        )
+        assert isinstance(
+            elf_pipeline.encoder, ELFNativeEncoder
+        ), "多 token 检索需要 ELF 原生编码器 (ELFNativeEncoder)"
+        index = TokenIndex.build(elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens)
         token_retriever = ColBERTRetriever(index)
         retriever = None
     else:
@@ -209,6 +213,11 @@ def run_benchmark(
         elf_cfg_scale: ELF CFG 引导强度（仅 method='elf' 生效）。
         shared: 预构建的共享上下文（数据集 + 编码器 + 检索器 + ELF pipeline）。
                 传入时跳过数据加载 / 文档编码 / 建索引，供参数网格多组复用。
+                注意：use_token_retrieval 仅在 shared=None 时生效（传入 shared 时
+                假定上下文已配置好 token 检索器）。
+        use_token_retrieval: 启用 ColBERT 式多 token 检索（仅 method='elf' 生效；
+                            shared 非 None 时忽略，沿用上下文中已有的检索模式）。
+        max_tokens: token 序列截断长度（默认 64，仅 use_token_retrieval 时生效）。
 
     Returns:
         包含聚合指标的 DataFrame（一行，列含 dataset/method 及各 k 指标）。
@@ -288,8 +297,9 @@ def run_benchmark(
     for qid in tqdm(query_ids, desc="检索中"):
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
-            assert elf_pipeline is not None
-            qt, qm = elf_pipeline.encoder.encode_tokens(
+            assert ctx.elf_pipeline is not None
+            assert isinstance(ctx.elf_pipeline.encoder, ELFNativeEncoder)
+            qt, qm = ctx.elf_pipeline.encoder.encode_tokens(
                 [data.queries[qid]], max_tokens=max_tokens
             )
             doc_ids_found, _ = ctx.token_retriever.search(qt[0], qm[0], k=max(k_values))

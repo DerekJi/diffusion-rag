@@ -17,10 +17,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numpy.typing import NDArray
 
 from src.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.elf.native_encoder import ELFNativeEncoder
 
 logger = get_logger(__name__)
 
@@ -64,12 +69,22 @@ class TokenIndex:
     @classmethod
     def build(
         cls,
-        encoder,
+        encoder: ELFNativeEncoder,
         doc_ids: list[str],
         doc_texts: list[str],
         max_tokens: int = 64,
     ) -> "TokenIndex":
-        """从文本构建 token 索引。"""
+        """从文本构建 token 索引。
+
+        Args:
+            encoder: ELF 原生编码器（T5 token 级向量, 提供 encode_tokens）。
+            doc_ids: 文档 ID 列表。
+            doc_texts: 文档文本列表。
+            max_tokens: 截断的 token 数。
+
+        Returns:
+            构建完成的 TokenIndex。
+        """
         tokens, mask = encoder.encode_tokens(doc_texts, max_tokens=max_tokens)
         return cls(doc_ids, tokens, mask)
 
@@ -109,7 +124,7 @@ class ColBERTRetriever:
         """
         if k <= 0:
             return ([], [])
-        qt = _l2_normalize(np.asarray(query_tokens, dtype=np.float32), axis=0)
+        qt = _l2_normalize(np.asarray(query_tokens, dtype=np.float32), axis=1)
         qm = np.asarray(query_mask, dtype=np.float32)
         if np.all(qm <= 0):
             return ([], [])  # 查询无有效 token
@@ -122,7 +137,7 @@ class ColBERTRetriever:
 
         # 对每个查询 token 取文档侧最大值 (Lq, N)
         doc_scores = sims.max(axis=2)
-        doc_scores = np.where(qm[:, None] > 0, doc_scores, np.nan)  # 排除 padding
+        doc_scores = np.where(qm[:, None] > 0, doc_scores, np.float32(np.nan))  # 排除 padding
         with np.errstate(all="ignore"):
             scores = np.nanmean(doc_scores, axis=0)  # (N,) 查询 token 均值
 

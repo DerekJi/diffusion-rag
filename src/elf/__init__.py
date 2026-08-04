@@ -9,6 +9,7 @@ from src.elf.model_wrapper import ELFModelWrapper, create_model_pair
 from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.native_model import ELFDenoiser
 from src.elf.pipeline import ELFPipeline
+from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 
 __all__ = [
     "add_noise",
@@ -20,6 +21,8 @@ __all__ = [
     "ELFEncoder",
     "ELFModelWrapper",
     "ELFNativeEncoder",
+    "ColBERTRetriever",
     "ELFPipeline",
     "sigma",
+    "TokenIndex",
 ]

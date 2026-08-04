@@ -197,6 +197,7 @@ class ELFNativeEncoder:
             raise ValueError("输入文本不能为空字符串")
         return self._pooled_torch([text], batch_size=1).reshape(-1)
 
+    @torch.no_grad()
     def encode_tokens(
         self,
         texts: list[str],
@@ -225,8 +226,7 @@ class ELFNativeEncoder:
                 truncation=True,
                 max_length=max_tokens,
             ).to(self.device)
-            with torch.no_grad():
-                hidden = self._t5(**inputs).last_hidden_state  # (B, L, 512)
+            hidden = self._t5(**inputs).last_hidden_state  # (B, L, 512)
             mask = inputs["attention_mask"].unsqueeze(-1).float()  # (B, L, 1)
             token_list.append(hidden.detach().cpu().numpy())
             mask_list.append(mask.squeeze(-1).cpu().numpy())
