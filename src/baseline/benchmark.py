@@ -36,6 +36,7 @@ from src.config import (
     SUPPORTED_METHODS,
 )
 from src.elf.pipeline import ELFPipeline
+from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
 from src.utils.encoder_factory import create_encoder
@@ -62,17 +63,20 @@ class BenchmarkContext:
         data: 采样后的数据集三元组。
         encoder: 文档侧编码器（baseline → BGE；elf → ELFPipeline），
                  baseline 查询编码也复用该实例。
-        retriever: 基于文档向量构建的检索器。
+        retriever: 基于文档向量构建的 FAISS 检索器（token 模式下为 None）。
         elf_pipeline: ELFPipeline（仅 method='elf' 时非 None），
                       文档编码与查询增强共用同一实例。
+        token_retriever: ColBERT 式多 token 检索器（method='elf' 且
+                         use_token_retrieval 时非 None, issue #39）。
     """
 
     dataset: str
     method: str
     data: DatasetTriple
     encoder: BaselineEncoder | ELFPipeline
-    retriever: Retriever
+    retriever: Retriever | None = None
     elf_pipeline: ELFPipeline | None = None
+    token_retriever: ColBERTRetriever | None = None
 
 
 def build_benchmark_context(
@@ -82,6 +86,8 @@ def build_benchmark_context(
     index_nlist: int = DEFAULT_INDEX_NLIST,
     seed: int = DEFAULT_SEED,
     sample: int | None = None,
+    use_token_retrieval: bool = False,
+    max_tokens: int = 64,
 ) -> BenchmarkContext:
     """加载数据集、采样并编码文档建索引，返回可复用的评测上下文。
 
@@ -138,9 +144,20 @@ def build_benchmark_context(
         assert isinstance(encoder, BaselineEncoder)
         doc_vectors = encoder.encode_batch(doc_texts)
 
-    indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
-    indexer.build(doc_vectors, doc_ids)
-    retriever = Retriever(indexer)
+    token_retriever = None
+    if method == METHOD_ELF and use_token_retrieval:
+        # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
+        # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
+        assert elf_pipeline is not None
+        index = TokenIndex.build(
+            elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens
+        )
+        token_retriever = ColBERTRetriever(index)
+        retriever = None
+    else:
+        indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
+        indexer.build(doc_vectors, doc_ids)
+        retriever = Retriever(indexer)
     return BenchmarkContext(
         dataset=dataset,
         method=method,
@@ -148,6 +165,7 @@ def build_benchmark_context(
         encoder=encoder,
         retriever=retriever,
         elf_pipeline=elf_pipeline,
+        token_retriever=token_retriever,
     )
 
 
@@ -164,6 +182,8 @@ def run_benchmark(
     elf_noise_t: float = DEFAULT_ELF_NOISE_T,
     elf_cfg_scale: float = DEFAULT_ELF_CFG_SCALE,
     shared: BenchmarkContext | None = None,
+    use_token_retrieval: bool = False,
+    max_tokens: int = 64,
 ) -> pd.DataFrame:
     """运行完整检索评测流程（Baseline / ELF 双链路）。
 
@@ -214,6 +234,8 @@ def run_benchmark(
             index_nlist=index_nlist,
             seed=seed,
             sample=sample,
+            use_token_retrieval=use_token_retrieval,
+            max_tokens=max_tokens,
         )
     else:
         ctx = shared
@@ -264,8 +286,17 @@ def run_benchmark(
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     all_results: dict[str, list[str]] = {}
     for qid in tqdm(query_ids, desc="检索中"):
-        qvec = query_encoder(data.queries[qid])
-        doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
+        if ctx.token_retriever is not None:
+            # 多 token 检索: 查询 token 编码 + maxsim
+            assert elf_pipeline is not None
+            qt, qm = elf_pipeline.encoder.encode_tokens(
+                [data.queries[qid]], max_tokens=max_tokens
+            )
+            doc_ids_found, _ = ctx.token_retriever.search(qt[0], qm[0], k=max(k_values))
+        else:
+            assert retriever is not None
+            qvec = query_encoder(data.queries[qid])
+            doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
         all_results[qid] = doc_ids_found
 
     # 4. 计算指标
@@ -333,6 +364,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
     )
+    parser.add_argument(
+        "--token-retrieval",
+        action="store_true",
+        help="使用 ColBERT 式多 token 检索(method=elf, issue #39)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=64, help="token 检索的序列截断长度(默认 64)"
+    )
     return parser
 
 
@@ -352,6 +391,8 @@ def _main() -> int:
         elf_steps=args.steps,
         elf_noise_t=args.noise_t,
         elf_cfg_scale=args.cfg_scale,
+        use_token_retrieval=args.token_retrieval,
+        max_tokens=args.max_tokens,
     )
     # print() is intentional: CLI stdout output for the result table
     print(df.to_markdown())
