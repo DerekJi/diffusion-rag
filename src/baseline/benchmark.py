@@ -17,6 +17,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,7 @@ from src.config import (
     SUPPORTED_DATASETS,
     SUPPORTED_METHODS,
 )
+from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.pipeline import ELFPipeline
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
@@ -46,6 +48,9 @@ from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
+
+if TYPE_CHECKING:
+    from src.elf.token_retriever import ColBERTRetriever
 
 logger = get_logger(__name__)
 
@@ -77,7 +82,7 @@ class BenchmarkContext:
     encoder: BaselineEncoder | ELFPipeline
     retriever: Retriever | None = None
     elf_pipeline: ELFPipeline | None = None
-    token_retriever: "ColBERTRetriever | None" = None
+    token_retriever: ColBERTRetriever | None = None
 
 
 def build_benchmark_context(
@@ -153,8 +158,8 @@ def build_benchmark_context(
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
         assert elf_pipeline is not None
-        assert hasattr(
-            elf_pipeline.encoder, "encode_tokens"
+        assert isinstance(
+            elf_pipeline.encoder, ELFNativeEncoder
         ), "多 token 检索需要 ELF 原生编码器 (提供 encode_tokens 方法)"
         from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 
@@ -297,12 +302,14 @@ def run_benchmark(
         query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
+    # token 检索模式前置校验（仅一次，而非逐 query 重复断言）
+    if ctx.token_retriever is not None:
+        assert ctx.elf_pipeline is not None
+        assert hasattr(ctx.elf_pipeline.encoder, "encode_tokens")
     all_results: dict[str, list[str]] = {}
     for qid in tqdm(query_ids, desc="检索中"):
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
-            assert ctx.elf_pipeline is not None
-            assert hasattr(ctx.elf_pipeline.encoder, "encode_tokens")
             qt, qm = ctx.elf_pipeline.encoder.encode_tokens(
                 [data.queries[qid]], max_tokens=max_tokens
             )

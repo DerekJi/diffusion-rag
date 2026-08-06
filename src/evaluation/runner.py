@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         elf_steps=args.steps,
         elf_noise_t=args.noise_t,
         elf_cfg_scale=args.cfg_scale,
+        use_token_retrieval=args.token_retrieval,
+        max_tokens=args.max_tokens,
     )
     logger.info(
         "评测完成: dataset=%s, method=%s → 指标已保存到 %s/%s/%s.csv",

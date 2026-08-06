@@ -347,3 +347,19 @@ class TestEncodeTokens:
         assert mask.shape == (0, 0)
         assert tokens.dtype == np.float32
         assert mask.dtype == np.float32
+
+    def test_cross_batch_length_consistency(self, encoder: ELFNativeEncoder) -> None:
+        """跨 batch 长度不一致时所有输出应 pad 到同一 max_tokens。
+
+        模拟短文本 + 长文本混合，使用小 batch_size 强制拆分为多个 batch，
+        验证 padding="max_length" 保证 concatenate 不会因 shape 不匹配崩溃。
+        """
+        # 构造足够多文本，使 batch_size=2 时拆分为多个 batch
+        texts = ["hi", "hello world", "a longer sentence with more tokens here", "short"]
+        tokens, mask = encoder.encode_tokens(texts, max_tokens=16, batch_size=2)
+        assert tokens.shape[0] == 4
+        assert mask.shape[0] == 4
+        # 关键断言：所有 batch 输出序列长度一致，等于 max_tokens
+        assert tokens.shape[1] == 16
+        assert mask.shape[1] == 16
+        assert tokens.shape[2] == 512

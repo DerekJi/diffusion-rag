@@ -227,7 +227,7 @@ class ELFNativeEncoder:
             inputs = self._tokenizer(
                 batch_texts,
                 return_tensors="pt",
-                padding=True,
+                padding="max_length",
                 truncation=True,
                 max_length=max_tokens,
             ).to(self.device)
@@ -236,8 +236,8 @@ class ELFNativeEncoder:
             token_list.append(hidden.detach().cpu().numpy())
             mask_list.append(mask.squeeze(-1).cpu().numpy())
         return (
-            np.asarray(np.concatenate(token_list, axis=0), dtype=np.float32),
-            np.asarray(np.concatenate(mask_list, axis=0), dtype=np.float32),
+            np.concatenate(token_list, axis=0).astype(np.float32, copy=False),
+            np.concatenate(mask_list, axis=0).astype(np.float32, copy=False),
         )
 
     @torch.no_grad()
