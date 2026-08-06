@@ -137,7 +137,7 @@ class ColBERTRetriever:
 
         # 对每个查询 token 取文档侧最大值 (Lq, N)
         doc_scores = sims.max(axis=2)
-        doc_scores = np.where(qm[:, None] > 0, doc_scores, np.float32(np.nan))  # 排除 padding
+        doc_scores = np.where(qm[:, None] > 0, doc_scores, np.float32("nan"))  # 排除 padding
         with np.errstate(all="ignore"):
             scores = np.nanmean(doc_scores, axis=0)  # (N,) 查询 token 均值
 

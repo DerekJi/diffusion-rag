@@ -3,6 +3,7 @@
 使用 mock 模式，无须下载真实模型或 ELF 权重。
 """
 
+import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -363,3 +364,11 @@ class TestEncodeTokens:
         assert tokens.shape[1] == 16
         assert mask.shape[1] == 16
         assert tokens.shape[2] == 512
+        # 验证 tokenizer 被调用时传入了正确的 padding / max_length 参数
+        encoder._tokenizer.assert_called_with(  # type: ignore[attr-defined]
+            unittest.mock.ANY,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=16,
+        )

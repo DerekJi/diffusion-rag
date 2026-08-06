@@ -143,30 +143,30 @@ def build_benchmark_context(
     logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
     encoder, elf_pipeline = create_encoder(method, encoder_name)
-    if elf_pipeline is not None:
-        # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
-        # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
-        # 注：token 检索模式下 doc_vectors 仅用于潜在诊断/对比，不被检索器消费。
-        doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
-    else:
-        # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
-        assert isinstance(encoder, BaselineEncoder)
-        doc_vectors = encoder.encode_batch(doc_texts)
 
     token_retriever = None
     if method == METHOD_ELF and use_token_retrieval:
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
-        assert elf_pipeline is not None
-        assert isinstance(
-            elf_pipeline.encoder, ELFNativeEncoder
-        ), "多 token 检索需要 ELF 原生编码器 (提供 encode_tokens 方法)"
+        if elf_pipeline is None:
+            raise RuntimeError("token 检索模式需要 ELFPipeline")
+        if not isinstance(elf_pipeline.encoder, ELFNativeEncoder):
+            raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
         from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 
         index = TokenIndex.build(elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens)
         token_retriever = ColBERTRetriever(index)
         retriever = None
     else:
+        # FAISS 路径：编码文档 → pooled 向量 → 建索引
+        if elf_pipeline is not None:
+            # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
+            # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
+            doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
+        else:
+            # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
+            assert isinstance(encoder, BaselineEncoder)
+            doc_vectors = encoder.encode_batch(doc_texts)
         indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
         indexer.build(doc_vectors, doc_ids)
         retriever = Retriever(indexer)
@@ -297,25 +297,29 @@ def run_benchmark(
                 rng=rng,
             )
 
-        query_encoder = _elf_query_encode  # token 检索模式下不走 query_encoder(内联编码)
+        query_encoder = _elf_query_encode  # token 检索模式下不走此编码器（内联 encode_tokens）
     else:
         query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     # token 检索模式前置校验（仅一次，而非逐 query 重复断言）
+    token_encoder: ELFNativeEncoder | None = None
     if ctx.token_retriever is not None:
-        assert ctx.elf_pipeline is not None
-        assert hasattr(ctx.elf_pipeline.encoder, "encode_tokens")
+        if ctx.elf_pipeline is None:
+            raise RuntimeError("token 检索模式需要 ELFPipeline")
+        if not isinstance(ctx.elf_pipeline.encoder, ELFNativeEncoder):
+            raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
+        token_encoder = ctx.elf_pipeline.encoder
     all_results: dict[str, list[str]] = {}
     for qid in tqdm(query_ids, desc="检索中"):
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
-            qt, qm = ctx.elf_pipeline.encoder.encode_tokens(
-                [data.queries[qid]], max_tokens=max_tokens
-            )
+            assert token_encoder is not None  # 前置校验已保证
+            qt, qm = token_encoder.encode_tokens([data.queries[qid]], max_tokens=max_tokens)
             doc_ids_found, _ = ctx.token_retriever.search(qt[0], qm[0], k=max(k_values))
         else:
-            assert retriever is not None
+            if retriever is None:
+                raise RuntimeError("FAISS 检索器未初始化")
             qvec = query_encoder(data.queries[qid])
             doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
         all_results[qid] = doc_ids_found
