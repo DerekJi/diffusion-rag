@@ -10,6 +10,8 @@ Phase 3.1 起支持双链路一键切换（仅替换查询编码方式）:
 文档侧编码（BGE）与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）。
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from collections.abc import Callable
@@ -35,9 +37,7 @@ from src.config import (
     SUPPORTED_DATASETS,
     SUPPORTED_METHODS,
 )
-from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.pipeline import ELFPipeline
-from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
 from src.utils.encoder_factory import create_encoder
@@ -77,7 +77,7 @@ class BenchmarkContext:
     encoder: BaselineEncoder | ELFPipeline
     retriever: Retriever | None = None
     elf_pipeline: ELFPipeline | None = None
-    token_retriever: ColBERTRetriever | None = None
+    token_retriever: "ColBERTRetriever | None" = None
 
 
 def build_benchmark_context(
@@ -141,6 +141,7 @@ def build_benchmark_context(
     if elf_pipeline is not None:
         # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
         # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
+        # 注：token 检索模式下 doc_vectors 仅用于潜在诊断/对比，不被检索器消费。
         doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
     else:
         # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
@@ -152,9 +153,11 @@ def build_benchmark_context(
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
         assert elf_pipeline is not None
-        assert isinstance(
-            elf_pipeline.encoder, ELFNativeEncoder
-        ), "多 token 检索需要 ELF 原生编码器 (ELFNativeEncoder)"
+        assert hasattr(
+            elf_pipeline.encoder, "encode_tokens"
+        ), "多 token 检索需要 ELF 原生编码器 (提供 encode_tokens 方法)"
+        from src.elf.token_retriever import ColBERTRetriever, TokenIndex
+
         index = TokenIndex.build(elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens)
         token_retriever = ColBERTRetriever(index)
         retriever = None
@@ -216,8 +219,9 @@ def run_benchmark(
                 注意：use_token_retrieval 仅在 shared=None 时生效（传入 shared 时
                 假定上下文已配置好 token 检索器）。
         use_token_retrieval: 启用 ColBERT 式多 token 检索（仅 method='elf' 生效；
-                            shared 非 None 时忽略，沿用上下文中已有的检索模式）。
-        max_tokens: token 序列截断长度（默认 64，仅 use_token_retrieval 时生效）。
+                            shared 非 None 时忽略，由上下文决定检索模式）。
+        max_tokens: token 序列截断长度（默认 64）。shared 非 None 时仍用于查询侧
+                    截断，应与 shared 上下文构建时保持一致。
 
     Returns:
         包含聚合指标的 DataFrame（一行，列含 dataset/method 及各 k 指标）。
@@ -288,7 +292,7 @@ def run_benchmark(
                 rng=rng,
             )
 
-        query_encoder = _elf_query_encode
+        query_encoder = _elf_query_encode  # token 检索模式下不走 query_encoder(内联编码)
     else:
         query_encoder = encoder.encode
 
@@ -298,7 +302,7 @@ def run_benchmark(
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
             assert ctx.elf_pipeline is not None
-            assert isinstance(ctx.elf_pipeline.encoder, ELFNativeEncoder)
+            assert hasattr(ctx.elf_pipeline.encoder, "encode_tokens")
             qt, qm = ctx.elf_pipeline.encoder.encode_tokens(
                 [data.queries[qid]], max_tokens=max_tokens
             )

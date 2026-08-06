@@ -215,6 +215,11 @@ class ELFNativeEncoder:
             (tokens, mask): tokens shape (n, L, 512) float32 未归一化,
             mask shape (n, L) float32(1=有效 token, 0=padding)。
         """
+        if not texts:
+            return (
+                np.empty((0, 0, 512), dtype=np.float32),
+                np.empty((0, 0), dtype=np.float32),
+            )
         token_list: list[NDArray[np.float32]] = []
         mask_list: list[NDArray[np.float32]] = []
         for i in range(0, len(texts), batch_size):
