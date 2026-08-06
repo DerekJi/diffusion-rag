@@ -214,6 +214,8 @@ class ELFNativeEncoder:
         Returns:
             (tokens, mask): tokens shape (n, L, 512) float32 未归一化,
             mask shape (n, L) float32(1=有效 token, 0=padding)。
+            空输入时返回 (0, 0, 512) 和 (0, 0)（第二维为 0 表示无 token，
+            区别于 max_tokens 以显式表明输入为空）。
         """
         if not texts:
             return (

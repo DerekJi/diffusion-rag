@@ -207,7 +207,7 @@ class TestRunBenchmark:
 
     def test_token_retrieval_uses_encode_tokens(self, tmp_path: Path) -> None:
         """token 检索模式：查询走 encoder.encode_tokens + maxsim，不调用 enhance()。"""
-        native_encoder = ELFNativeEncoder.__new__(ELFNativeEncoder)  # 不触发 __init__（不加载模型）
+        native_encoder = ELFNativeEncoder.__new__(ELFNativeEncoder)  # 绕过 __init__ 以避免加载模型
         native_encoder.encode_tokens = MagicMock(  # type: ignore[method-assign]
             return_value=(
                 np.zeros((1, 4, 512), dtype=np.float32),

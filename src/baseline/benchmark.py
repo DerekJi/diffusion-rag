@@ -55,6 +55,25 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _validate_token_retrieval_pipeline(elf_pipeline: ELFPipeline | None) -> ELFNativeEncoder:
+    """校验 token 检索模式的前置条件并返回 ELFNativeEncoder。
+
+    Args:
+        elf_pipeline: ELFPipeline 实例（调用方已保证 method='elf' 时非 None）。
+
+    Returns:
+        pipeline 中的 ELFNativeEncoder 实例。
+
+    Raises:
+        RuntimeError: elf_pipeline 为 None 或其 encoder 不是 ELFNativeEncoder。
+    """
+    if elf_pipeline is None:
+        raise RuntimeError("token 检索模式需要 ELFPipeline")
+    if not isinstance(elf_pipeline.encoder, ELFNativeEncoder):
+        raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
+    return elf_pipeline.encoder
+
+
 @dataclass
 class BenchmarkContext:
     """一次构建、多组共享的评测上下文。
@@ -148,13 +167,10 @@ def build_benchmark_context(
     if method == METHOD_ELF and use_token_retrieval:
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
-        if elf_pipeline is None:
-            raise RuntimeError("token 检索模式需要 ELFPipeline")
-        if not isinstance(elf_pipeline.encoder, ELFNativeEncoder):
-            raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
+        token_encoder = _validate_token_retrieval_pipeline(elf_pipeline)
         from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 
-        index = TokenIndex.build(elf_pipeline.encoder, doc_ids, doc_texts, max_tokens=max_tokens)
+        index = TokenIndex.build(token_encoder, doc_ids, doc_texts, max_tokens=max_tokens)
         token_retriever = ColBERTRetriever(index)
         retriever = None
     else:
@@ -279,42 +295,47 @@ def run_benchmark(
                 logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
                 raise RuntimeError(f"ELF 模型加载失败: {e}") from e
         elf_pipeline = ctx.elf_pipeline
-        rng = np.random.default_rng(seed)
-        logger.info(
-            "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
-            elf_steps,
-            elf_noise_t,
-            elf_cfg_scale,
-        )
 
-        def _elf_query_encode(text: str) -> NDArray[np.float32]:
-            """ELF 链路查询编码：编码 → 加噪 → 去噪 → CFG 引导。"""
-            return elf_pipeline.enhance(
-                text,
-                steps=elf_steps,
-                noise_t=elf_noise_t,
-                cfg_scale=elf_cfg_scale,
-                rng=rng,
+        if ctx.token_retriever is None:
+            # FAISS 路径：ELF 增强编码
+            rng = np.random.default_rng(seed)
+            logger.info(
+                "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
+                elf_steps,
+                elf_noise_t,
+                elf_cfg_scale,
             )
 
-        query_encoder = _elf_query_encode  # token 检索模式下不走此编码器（内联 encode_tokens）
+            def _elf_query_encode(text: str) -> NDArray[np.float32]:
+                """ELF 链路查询编码：编码 → 加噪 → 去噪 → CFG 引导。"""
+                return elf_pipeline.enhance(
+                    text,
+                    steps=elf_steps,
+                    noise_t=elf_noise_t,
+                    cfg_scale=elf_cfg_scale,
+                    rng=rng,
+                )
+
+            query_encoder = _elf_query_encode
+        else:
+            # token 检索模式：查询编码由内联 encode_tokens 完成，
+            # query_encoder 在此路径下不被调用
+            query_encoder = lambda _: np.empty(0, dtype=np.float32)  # unreachable
     else:
         query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     # token 检索模式前置校验（仅一次，而非逐 query 重复断言）
-    token_encoder: ELFNativeEncoder | None = None
     if ctx.token_retriever is not None:
-        if ctx.elf_pipeline is None:
-            raise RuntimeError("token 检索模式需要 ELFPipeline")
-        if not isinstance(ctx.elf_pipeline.encoder, ELFNativeEncoder):
-            raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
-        token_encoder = ctx.elf_pipeline.encoder
+        token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
+    else:
+        token_encoder: ELFNativeEncoder | None = None
     all_results: dict[str, list[str]] = {}
     for qid in tqdm(query_ids, desc="检索中"):
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
-            assert token_encoder is not None  # 前置校验已保证
+            if token_encoder is None:
+                raise RuntimeError("token_encoder 未初始化（前置校验异常）")
             qt, qm = token_encoder.encode_tokens([data.queries[qid]], max_tokens=max_tokens)
             doc_ids_found, _ = ctx.token_retriever.search(qt[0], qm[0], k=max(k_values))
         else:

@@ -364,11 +364,11 @@ class TestEncodeTokens:
         assert tokens.shape[1] == 16
         assert mask.shape[1] == 16
         assert tokens.shape[2] == 512
-        # 验证 tokenizer 被调用时传入了正确的 padding / max_length 参数
-        encoder._tokenizer.assert_called_with(  # type: ignore[attr-defined]
-            unittest.mock.ANY,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=16,
-        )
+        # 验证每次 tokenizer 调用都传入了正确的 padding / max_length 参数
+        assert encoder._tokenizer.call_count >= 2  # type: ignore[attr-defined]
+        for call_args in encoder._tokenizer.call_args_list:  # type: ignore[attr-defined]
+            _, kwargs = call_args
+            assert kwargs["return_tensors"] == "pt"
+            assert kwargs["padding"] == "max_length"
+            assert kwargs["truncation"] is True
+            assert kwargs["max_length"] == 16
