@@ -14,6 +14,7 @@ from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 __all__ = [
     "add_noise",
     "cfg_guide",
+    "ColBERTRetriever",
     "create_model_pair",
     "denoise",
     "denoise_with_cfg",
@@ -21,7 +22,6 @@ __all__ = [
     "ELFEncoder",
     "ELFModelWrapper",
     "ELFNativeEncoder",
-    "ColBERTRetriever",
     "ELFPipeline",
     "sigma",
     "TokenIndex",

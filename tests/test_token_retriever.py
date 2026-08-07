@@ -109,3 +109,29 @@ class TestColBERTRetriever:
         q_mask = np.zeros(2, dtype=np.float32)
         found, _ = ret.search(q_tokens, q_mask, k=3)
         assert found == []
+
+    def test_k_zero_returns_empty(self) -> None:
+        """k <= 0 时立即返回空结果，不执行检索。"""
+        idx = _make_index()
+        ret = ColBERTRetriever(idx)
+        q_tokens = np.stack([_unit(8, 0)])
+        q_mask = np.ones(1, dtype=np.float32)
+        found, scores = ret.search(q_tokens, q_mask, k=0)
+        assert found == []
+        assert scores == []
+
+    def test_1d_query_raises(self) -> None:
+        """1 维 query_tokens 应抛出清晰 ValueError。"""
+        idx = _make_index()
+        ret = ColBERTRetriever(idx)
+        with pytest.raises(ValueError, match="二维"):
+            ret.search(np.zeros(8, dtype=np.float32), np.ones(1, dtype=np.float32), k=3)
+
+    def test_dimension_mismatch_raises(self) -> None:
+        """查询维度与索引维度不一致时抛出清晰 ValueError。"""
+        idx = _make_index(dim=8)
+        ret = ColBERTRetriever(idx)
+        q_tokens = np.zeros((2, 16), dtype=np.float32)  # dim=16 ≠ 8
+        q_mask = np.ones(2, dtype=np.float32)
+        with pytest.raises(ValueError, match="不一致"):
+            ret.search(q_tokens, q_mask, k=3)

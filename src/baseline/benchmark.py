@@ -59,7 +59,7 @@ def _validate_token_retrieval_pipeline(elf_pipeline: ELFPipeline | None) -> ELFN
     """校验 token 检索模式的前置条件并返回 ELFNativeEncoder。
 
     Args:
-        elf_pipeline: ELFPipeline 实例（调用方已保证 method='elf' 时非 None）。
+        elf_pipeline: ELFPipeline 实例（可为 None，此时抛出 RuntimeError）。
 
     Returns:
         pipeline 中的 ELFNativeEncoder 实例。
@@ -285,6 +285,8 @@ def run_benchmark(
 
     # 2. 编码查询 + 检索（仅此处按 method 切换链路）
     query_ids = sorted(data.queries.keys())
+    # 查询编码器：baseline/elf 链路赋值；token 检索模式为 None（由 encode_tokens 批量完成）
+    query_encoder: Callable[[str], NDArray[np.float32]] | None = None
 
     if method == METHOD_ELF:
         if ctx.elf_pipeline is None:
@@ -315,13 +317,13 @@ def run_benchmark(
                     rng=rng,
                 )
 
-            query_encoder: Callable[[str], NDArray[np.float32]] = _elf_query_encode
+            query_encoder = _elf_query_encode
         else:
             # token 检索模式：查询编码由 encode_tokens 批量完成，
             # query_encoder 在此路径下不被调用
             query_encoder = None
     else:
-        query_encoder: Callable[[str], NDArray[np.float32]] = encoder.encode
+        query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     # token 检索模式前置校验 + 批量查询编码（仅一次，而非逐 query 重复断言/编码）
@@ -335,7 +337,7 @@ def run_benchmark(
         all_qt, all_qm = token_encoder.encode_tokens(all_query_texts, max_tokens=max_tokens)
     else:
         token_encoder = None
-        all_qt, all_qm = None, None  # type: ignore[assignment]
+        all_qt, all_qm = None, None
     all_results: dict[str, list[str]] = {}
     for i, qid in enumerate(tqdm(query_ids, desc="检索中")):
         if ctx.token_retriever is not None:

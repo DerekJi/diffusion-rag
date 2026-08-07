@@ -85,6 +85,10 @@ class TokenIndex:
         Returns:
             构建完成的 TokenIndex。
         """
+        if len(doc_ids) != len(doc_texts):
+            raise ValueError(
+                f"doc_ids 数量 {len(doc_ids)} 与 doc_texts 数量 {len(doc_texts)} 不一致"
+            )
         tokens, mask = encoder.encode_tokens(doc_texts, max_tokens=max_tokens)
         return cls(doc_ids, tokens, mask)
 
