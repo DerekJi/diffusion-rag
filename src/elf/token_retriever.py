@@ -124,7 +124,10 @@ class ColBERTRetriever:
         """
         if k <= 0:
             return ([], [])
-        qt = _l2_normalize(np.asarray(query_tokens, dtype=np.float32), axis=1)
+        qt_arr = np.asarray(query_tokens, dtype=np.float32)
+        if qt_arr.ndim != 2:
+            raise ValueError(f"query_tokens 需为 (Lq, dim) 二维数组，实际 ndim={qt_arr.ndim}")
+        qt = _l2_normalize(qt_arr, axis=1)
         qm = np.asarray(query_mask, dtype=np.float32)
         if np.all(qm <= 0):
             return ([], [])  # 查询无有效 token

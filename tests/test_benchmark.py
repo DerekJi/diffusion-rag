@@ -210,8 +210,8 @@ class TestRunBenchmark:
         native_encoder = ELFNativeEncoder.__new__(ELFNativeEncoder)  # 绕过 __init__ 以避免加载模型
         native_encoder.encode_tokens = MagicMock(  # type: ignore[method-assign]
             return_value=(
-                np.zeros((1, 4, 512), dtype=np.float32),
-                np.ones((1, 4), dtype=np.float32),
+                np.zeros((4, 4, 512), dtype=np.float32),
+                np.ones((4, 4), dtype=np.float32),
             )
         )
         pipeline = MagicMock()
@@ -220,9 +220,9 @@ class TestRunBenchmark:
 
         df = run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir), shared=ctx)
 
-        assert native_encoder.encode_tokens.call_count == 4  # 4 条 query
+        assert native_encoder.encode_tokens.call_count == 1  # 批量编码 4 条 query
         assert ctx.token_retriever.search.call_count == 4
-        assert self._elf_pipeline_mock.enhance.call_count == 0
+        assert pipeline.enhance.call_count == 0
         assert df["method"].iloc[0] == METHOD_ELF
 
     def test_token_retrieval_requires_native_encoder(self, tmp_path: Path) -> None:

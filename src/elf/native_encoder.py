@@ -238,8 +238,8 @@ class ELFNativeEncoder:
             token_list.append(hidden.detach().cpu().numpy())
             mask_list.append(mask.squeeze(-1).cpu().numpy())
         return (
-            np.concatenate(token_list, axis=0).astype(np.float32, copy=False),
-            np.concatenate(mask_list, axis=0).astype(np.float32, copy=False),
+            np.concatenate(token_list, axis=0),
+            np.concatenate(mask_list, axis=0),
         )
 
     @torch.no_grad()

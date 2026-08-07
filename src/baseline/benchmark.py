@@ -286,7 +286,6 @@ def run_benchmark(
     # 2. 编码查询 + 检索（仅此处按 method 切换链路）
     query_ids = sorted(data.queries.keys())
 
-    query_encoder: Callable[[str], NDArray[np.float32]]
     if method == METHOD_ELF:
         if ctx.elf_pipeline is None:
             try:
@@ -316,36 +315,39 @@ def run_benchmark(
                     rng=rng,
                 )
 
-            query_encoder = _elf_query_encode
+            query_encoder: Callable[[str], NDArray[np.float32]] = _elf_query_encode
         else:
-            # token 检索模式：查询编码由内联 encode_tokens 完成，
+            # token 检索模式：查询编码由 encode_tokens 批量完成，
             # query_encoder 在此路径下不被调用
-            query_encoder = lambda _: np.zeros(768, dtype=np.float32)  # unreachable
+            query_encoder = None
     else:
-        query_encoder = encoder.encode
+        query_encoder: Callable[[str], NDArray[np.float32]] = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
-    # token 检索模式前置校验（仅一次，而非逐 query 重复断言）
-    token_encoder: ELFNativeEncoder | None = None
+    # token 检索模式前置校验 + 批量查询编码（仅一次，而非逐 query 重复断言/编码）
     if ctx.token_retriever is not None:
-        if shared is not None:
-            # 外部传入上下文时重新校验
-            token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
-        else:
-            # build_benchmark_context 中已完成校验，直接获取
-            assert ctx.elf_pipeline is not None
-            token_encoder = ctx.elf_pipeline.encoder
+        # 校验并获取 token 检索所需的 ELFNativeEncoder：shared 上下文由外部
+        # 构建，此处重新校验；自建上下文虽在 build_benchmark_context 中已完成
+        # 校验，重复调用开销可忽略，且可保持类型收窄一致。
+        token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
+        # 批量编码所有查询 token（避免逐 query 产生 N 次独立 tokenizer/torch 调用）
+        all_query_texts = [data.queries[qid] for qid in query_ids]
+        all_qt, all_qm = token_encoder.encode_tokens(all_query_texts, max_tokens=max_tokens)
+    else:
+        token_encoder = None
+        all_qt, all_qm = None, None  # type: ignore[assignment]
     all_results: dict[str, list[str]] = {}
-    for qid in tqdm(query_ids, desc="检索中"):
+    for i, qid in enumerate(tqdm(query_ids, desc="检索中")):
         if ctx.token_retriever is not None:
             # 多 token 检索: 查询 token 编码 + maxsim
-            if token_encoder is None:
-                raise RuntimeError("token_encoder 未初始化（前置校验异常）")
-            qt, qm = token_encoder.encode_tokens([data.queries[qid]], max_tokens=max_tokens)
-            doc_ids_found, _ = ctx.token_retriever.search(qt[0], qm[0], k=max(k_values))
+            if all_qt is None or all_qm is None:
+                raise RuntimeError("批量查询 token 编码未完成（前置校验异常）")
+            doc_ids_found, _ = ctx.token_retriever.search(all_qt[i], all_qm[i], k=max(k_values))
         else:
             if retriever is None:
                 raise RuntimeError("FAISS 检索器未初始化")
+            if query_encoder is None:
+                raise RuntimeError("query_encoder 未初始化（前置校验异常）")
             qvec = query_encoder(data.queries[qid])
             doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
         all_results[qid] = doc_ids_found
