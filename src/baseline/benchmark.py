@@ -17,7 +17,6 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -40,6 +39,7 @@ from src.config import (
 )
 from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.pipeline import ELFPipeline
+from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
 from src.utils.encoder_factory import create_encoder
@@ -48,9 +48,6 @@ from src.utils.sample import sample_dataset
 from src.utils.seed import set_seed
 from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
-
-if TYPE_CHECKING:
-    from src.elf.token_retriever import ColBERTRetriever
 
 logger = get_logger(__name__)
 
@@ -102,6 +99,7 @@ class BenchmarkContext:
     retriever: Retriever | None = None
     elf_pipeline: ELFPipeline | None = None
     token_retriever: ColBERTRetriever | None = None
+    token_encoder: ELFNativeEncoder | None = None
 
 
 def build_benchmark_context(
@@ -164,12 +162,11 @@ def build_benchmark_context(
     encoder, elf_pipeline = create_encoder(method, encoder_name)
 
     token_retriever = None
+    token_encoder = None
     if method == METHOD_ELF and use_token_retrieval:
         # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
         # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
         token_encoder = _validate_token_retrieval_pipeline(elf_pipeline)
-        from src.elf.token_retriever import ColBERTRetriever, TokenIndex
-
         index = TokenIndex.build(token_encoder, doc_ids, doc_texts, max_tokens=max_tokens)
         token_retriever = ColBERTRetriever(index)
         retriever = None
@@ -194,6 +191,7 @@ def build_benchmark_context(
         retriever=retriever,
         elf_pipeline=elf_pipeline,
         token_retriever=token_retriever,
+        token_encoder=token_encoder,
     )
 
 
@@ -328,15 +326,13 @@ def run_benchmark(
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     # token 检索模式前置校验 + 批量查询编码（仅一次，而非逐 query 重复断言/编码）
     if ctx.token_retriever is not None:
-        # 校验并获取 token 检索所需的 ELFNativeEncoder：shared 上下文由外部
-        # 构建，此处重新校验；自建上下文虽在 build_benchmark_context 中已完成
-        # 校验，重复调用开销可忽略，且可保持类型收窄一致。
-        token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
+        # 优先复用 build_benchmark_context 中已校验的 encoder；
+        # shared 上下文由外部手动构建时可能未设置，回退到重新校验
+        token_encoder = ctx.token_encoder or _validate_token_retrieval_pipeline(ctx.elf_pipeline)
         # 批量编码所有查询 token（避免逐 query 产生 N 次独立 tokenizer/torch 调用）
         all_query_texts = [data.queries[qid] for qid in query_ids]
         all_qt, all_qm = token_encoder.encode_tokens(all_query_texts, max_tokens=max_tokens)
     else:
-        token_encoder = None
         all_qt, all_qm = None, None
     all_results: dict[str, list[str]] = {}
     for i, qid in enumerate(tqdm(query_ids, desc="检索中")):

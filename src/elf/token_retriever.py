@@ -34,7 +34,7 @@ def _l2_normalize(x: NDArray[np.float32], axis: int) -> NDArray[np.float32]:
     """沿指定轴 L2 归一化, 零向量保持为零。"""
     norms = np.linalg.norm(x, axis=axis, keepdims=True)
     safe = np.where(norms > 1e-8, norms, 1.0)
-    return np.asarray(x / safe, dtype=np.float32)
+    return (x / safe).astype(np.float32, copy=False)
 
 
 class TokenIndex:

@@ -234,9 +234,9 @@ class ELFNativeEncoder:
                 max_length=max_tokens,
             ).to(self.device)
             hidden = self._t5(**inputs).last_hidden_state  # (B, L, 512)
-            mask = inputs["attention_mask"].unsqueeze(-1).float()  # (B, L, 1)
+            mask = inputs["attention_mask"].float()  # (B, L)
             token_list.append(hidden.detach().cpu().numpy())
-            mask_list.append(mask.squeeze(-1).cpu().numpy())
+            mask_list.append(mask.cpu().numpy())
         return (
             np.concatenate(token_list, axis=0),
             np.concatenate(mask_list, axis=0),
