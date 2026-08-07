@@ -20,6 +20,7 @@ from src.baseline.benchmark import (
     run_benchmark,
 )
 from src.config import METHOD_BASELINE, METHOD_ELF
+from src.elf.native_encoder import ELFNativeEncoder
 from src.evaluation.dataset import DatasetTriple
 
 
@@ -184,6 +185,54 @@ class TestRunBenchmark:
         )
         with pytest.raises(ValueError, match="不一致"):
             run_benchmark(dataset="nfcorpus", output_dir=str(self._output_dir), shared=ctx)
+
+    # ── token 检索模式 (issue #39) ─────────────
+
+    def _make_token_context(self, pipeline: object) -> BenchmarkContext:
+        """构造 token 检索模式的共享上下文（retriever 为 None，走 encode_tokens 路径）。"""
+        token_retriever = MagicMock()
+        token_retriever.search.side_effect = lambda qt, qm, k: (
+            [f"d{i}" for i in range(min(k, 8))],
+            [1.0] * min(k, 8),
+        )
+        return BenchmarkContext(
+            dataset="nfcorpus",
+            method=METHOD_ELF,
+            data=_make_fake_data(),
+            encoder=self._doc_encoder,
+            retriever=None,
+            elf_pipeline=pipeline,  # type: ignore[arg-type]
+            token_retriever=token_retriever,
+        )
+
+    def test_token_retrieval_uses_encode_tokens(self, tmp_path: Path) -> None:
+        """token 检索模式：查询走 encoder.encode_tokens + maxsim，不调用 enhance()。"""
+        native_encoder = ELFNativeEncoder.__new__(ELFNativeEncoder)  # 绕过 __init__ 以避免加载模型
+        native_encoder.encode_tokens = MagicMock(  # type: ignore[method-assign]
+            return_value=(
+                np.zeros((4, 4, 512), dtype=np.float32),
+                np.ones((4, 4), dtype=np.float32),
+            )
+        )
+        pipeline = MagicMock()
+        pipeline.encoder = native_encoder
+        ctx = self._make_token_context(pipeline)
+
+        df = run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir), shared=ctx)
+
+        assert native_encoder.encode_tokens.call_count == 1  # 批量编码 4 条 query
+        assert ctx.token_retriever.search.call_count == 4
+        assert pipeline.enhance.call_count == 0
+        assert df["method"].iloc[0] == METHOD_ELF
+
+    def test_token_retrieval_requires_native_encoder(self, tmp_path: Path) -> None:
+        """token 检索模式需要 ELFNativeEncoder：其他编码器抛出清晰 RuntimeError。"""
+        pipeline = MagicMock()
+        pipeline.encoder = MagicMock()  # 普通 mock，无 encode_tokens 方法
+        ctx = self._make_token_context(pipeline)
+
+        with pytest.raises(RuntimeError, match="ELFNativeEncoder"):
+            run_benchmark(method=METHOD_ELF, output_dir=str(self._output_dir), shared=ctx)
 
     # ── 文档编码按 method 切换 (issue #33) ─────
 

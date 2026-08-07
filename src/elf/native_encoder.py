@@ -198,6 +198,51 @@ class ELFNativeEncoder:
         return self._pooled_torch([text], batch_size=1).reshape(-1)
 
     @torch.no_grad()
+    def encode_tokens(
+        self,
+        texts: list[str],
+        max_tokens: int = 64,
+        batch_size: int = 32,
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        """T5 token 序列编码(不做 mean-pooling, 供 ColBERT 式多 token 检索)。
+
+        Args:
+            texts: 文本列表。
+            max_tokens: 截断的 token 数。
+            batch_size: 编码批次大小。
+
+        Returns:
+            (tokens, mask): tokens shape (n, L, 512) float32 未归一化,
+            mask shape (n, L) float32(1=有效 token, 0=padding)。
+            空输入时返回 (0, 0, 512) 和 (0, 0)（第二维为 0 表示无 token，
+            区别于 max_tokens 以显式表明输入为空）。
+        """
+        if not texts:
+            return (
+                np.empty((0, 0, 512), dtype=np.float32),
+                np.empty((0, 0), dtype=np.float32),
+            )
+        token_list: list[NDArray[np.float32]] = []
+        mask_list: list[NDArray[np.float32]] = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i : i + batch_size]
+            inputs = self._tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                padding="max_length",
+                truncation=True,
+                max_length=max_tokens,
+            ).to(self.device)
+            hidden = self._t5(**inputs).last_hidden_state  # (B, L, 512)
+            mask = inputs["attention_mask"].float()  # (B, L)
+            token_list.append(hidden.detach().cpu().numpy())
+            mask_list.append(mask.cpu().numpy())
+        return (
+            np.concatenate(token_list, axis=0),
+            np.concatenate(mask_list, axis=0),
+        )
+
+    @torch.no_grad()
     def embed_from_pooled(self, pooled: NDArray[np.float32]) -> NDArray[np.float32]:
         """512-dim pooled hidden → 768-dim L2 归一化检索嵌入。
 

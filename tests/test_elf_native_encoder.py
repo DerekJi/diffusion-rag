@@ -251,3 +251,123 @@ class TestLoadElfCheckpoint:
         """文件不存在时应返回 False 而不是抛异常。"""
         loaded = _load_elf_checkpoint(projection, str(tmp_path / "nope.pt"), torch.device("cpu"))
         assert loaded is False
+
+
+class TestEncodeTokens:
+    """encode_tokens 方法单元测试（token 级编码，无 mean-pooling）。"""
+
+    @pytest.fixture()
+    def encoder(self) -> ELFNativeEncoder:
+        """创建 mock encoder 并配置 _t5 / _tokenizer 返回固定值。"""
+        mock_t5 = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_proj = MagicMock(spec=torch.nn.Linear)
+
+        patchers = [
+            patch("src.elf.native_encoder.T5EncoderModel.from_pretrained", return_value=mock_t5),
+            patch(
+                "src.elf.native_encoder.T5Tokenizer.from_pretrained", return_value=mock_tokenizer
+            ),
+            patch("src.elf.native_encoder.torch.nn.Linear", return_value=mock_proj),
+            patch("src.elf.native_encoder._load_elf_checkpoint", return_value=False),
+        ]
+        for p in patchers:
+            p.start()
+
+        encoder = ELFNativeEncoder(device="cpu")
+
+        # 配置 _tokenizer: 返回包含 attention_mask 的类 BatchEncoding 对象
+        class _MockBatchEncoding(dict):
+            def to(self, device):
+                return self
+
+        def _make_tokenizer_output(texts, **kwargs):
+            max_len = kwargs.get("max_length", 64)
+            B = len(texts)
+            # 模拟每条文本不定长，padding 到 max_len
+            mask = torch.zeros(B, max_len, dtype=torch.long)
+            for b in range(B):
+                n_tokens = min(len(texts[b].split()) + 2, max_len)
+                mask[b, :n_tokens] = 1
+            return _MockBatchEncoding({"attention_mask": mask})
+
+        encoder._tokenizer.side_effect = _make_tokenizer_output  # type: ignore[attr-defined]
+
+        # 配置 _t5: 返回 last_hidden_state (B, L, 512)
+        def _make_t5_output(**inputs):
+            mask = inputs.get("attention_mask", None)
+            if mask is not None:
+                B, L = mask.shape[:2]
+            else:
+                B, L = 1, 64
+            hidden = torch.randn(B, L, 512, dtype=torch.float32)
+            mock_result = MagicMock()
+            mock_result.last_hidden_state = hidden
+            return mock_result
+
+        encoder._t5.side_effect = _make_t5_output  # type: ignore[attr-defined]
+
+        yield encoder
+
+        for p in patchers:
+            p.stop()
+
+    def test_single_text_shape(self, encoder: ELFNativeEncoder) -> None:
+        """单文本编码 shape 应为 (1, L, 512) + mask (1, L)。"""
+        tokens, mask = encoder.encode_tokens(["Hello world"], max_tokens=64)
+        assert tokens.shape[0] == 1
+        assert mask.shape[0] == 1
+        assert tokens.shape[1] == mask.shape[1]
+        assert tokens.shape[2] == 512
+        assert tokens.dtype == np.float32
+        assert mask.dtype == np.float32
+
+    def test_batch_shape_alignment(self, encoder: ELFNativeEncoder) -> None:
+        """批量文本各维度对齐。"""
+        texts = ["a short text", "another somewhat longer sentence", "third"]
+        tokens, mask = encoder.encode_tokens(texts, max_tokens=64)
+        assert tokens.shape[0] == 3
+        assert mask.shape[0] == 3
+        assert tokens.shape[1] == mask.shape[1]
+        assert tokens.shape[2] == 512
+        assert tokens.dtype == np.float32
+
+    def test_padding_mask_values(self, encoder: ELFNativeEncoder) -> None:
+        """mask 值应为 0 或 1（有效 token=1, padding=0）。"""
+        _, mask = encoder.encode_tokens(["test text"], max_tokens=64)
+        assert mask.dtype == np.float32
+        assert np.all((mask == 0.0) | (mask == 1.0))
+        # 至少有一个有效 token（"test text" 不会全是 padding）
+        assert mask.sum() > 0
+
+    def test_empty_list_early_return(self, encoder: ELFNativeEncoder) -> None:
+        """空列表应返回空 shape (0, 0, 512) + (0, 0)。"""
+        tokens, mask = encoder.encode_tokens([], max_tokens=64)
+        assert tokens.shape == (0, 0, 512)
+        assert mask.shape == (0, 0)
+        assert tokens.dtype == np.float32
+        assert mask.dtype == np.float32
+
+    def test_cross_batch_length_consistency(self, encoder: ELFNativeEncoder) -> None:
+        """跨 batch 长度不一致时所有输出应 pad 到同一 max_tokens。
+
+        模拟短文本 + 长文本混合，使用小 batch_size 强制拆分为多个 batch，
+        验证 padding="max_length" 保证 concatenate 不会因 shape 不匹配崩溃。
+        """
+        # 构造足够多文本，使 batch_size=2 时拆分为多个 batch
+        texts = ["hi", "hello world", "a longer sentence with more tokens here", "short"]
+        tokens, mask = encoder.encode_tokens(texts, max_tokens=16, batch_size=2)
+        assert tokens.shape[0] == 4
+        assert mask.shape[0] == 4
+        # 关键断言：所有 batch 输出序列长度一致，等于 max_tokens
+        assert tokens.shape[1] == 16
+        assert mask.shape[1] == 16
+        assert tokens.shape[2] == 512
+        # 验证每次 tokenizer 调用都传入了正确的 padding / max_length 参数
+        assert encoder._tokenizer.call_count >= 2  # type: ignore[attr-defined]
+        for call_args in encoder._tokenizer.call_args_list:  # type: ignore[attr-defined]
+            _, kwargs = call_args
+            assert kwargs["return_tensors"] == "pt"
+            assert kwargs["padding"] == "max_length"
+            assert kwargs["truncation"] is True
+            assert kwargs["max_length"] == 16

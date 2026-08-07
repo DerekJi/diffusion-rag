@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ELF 双链路评测结果报告 — nfcorpus sample=20</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --card: #ffffff; --ink: #1f2328; --muted: #57606a;
+    --accent: #0969da; --good: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --border: #d0d7de; --code-bg: #f6f8fa;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink); line-height: 1.7; }
+  header { background: linear-gradient(135deg, #0d1117, #161b22); color: #e6edf3;
+    padding: 40px 24px 32px; text-align: center; }
+  header h1 { margin: 0 0 8px; font-size: 26px; }
+  header p { margin: 4px 0; color: #8b949e; font-size: 14px; }
+  .verdict { display: inline-block; margin-top: 12px; padding: 6px 16px;
+    background: #1a7f37; color: #fff; border-radius: 999px; font-weight: 600; font-size: 14px; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 24px 28px; margin: 20px 0; }
+  h2 { margin: 0 0 16px; font-size: 20px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+  h3 { margin: 20px 0 10px; font-size: 16px; color: var(--accent); }
+  p { margin: 10px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  th { background: #f0f3f6; font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .good { color: var(--good); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  code { font-family: Consolas, monospace; background: var(--code-bg); padding: 1px 6px;
+    border-radius: 4px; font-size: 13px; }
+  .key-finding { border-left: 4px solid var(--accent); background: #f0f6ff;
+    padding: 12px 16px; border-radius: 6px; margin: 14px 0; }
+  .warn-box { border-left: 4px solid var(--warn); background: #fff8c5;
+    padding: 12px 16px; border-radius: 6px; margin: 14px 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  .formula { font-family: Consolas, monospace; background: var(--code-bg);
+    padding: 8px 12px; border-radius: 6px; font-size: 13px; margin: 10px 0; }
+  @media (max-width: 640px) { section { padding: 16px; } table { font-size: 12px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ELF 双链路评测结果报告</h1>
+  <p>diffusion-rag · nfcorpus · sample=20(20 queries / 542 docs)· seed=42 · 2026-08-03 / 2026-08-06(k 扫描)</p>
+  <span class="verdict">ELF(T5)+多 token 检索在 recall@10/mrr 反超 BGE, 且召回优势随 k 放大(recall@100 达 baseline 2 倍)</span>
+</header>
+
+<main>
+
+<!-- ============ 1. 摘要 ============ -->
+<section>
+  <h2>1. 摘要</h2>
+  <p>经过四轮修复(编码空间错位 #33 → 噪声尺度 #35 → 真实 denoiser #37 → 多 token 表示 #39),
+  评测编排器可完整运行双链路对比。最终实现的 <strong>ColBERT 式多 token 检索</strong>让
+  ELF 链路首次在 nfcorpus sample=20 上达到甚至超越 BGE baseline:</p>
+  <div class="key-finding">
+    <strong>核心结论:</strong> recall@10 与 mrr 反超 BGE(0.1605 vs 0.159, 0.6115 vs 0.600);
+    hit_rate@10 持平; <span class="warn">ndcg@10 仍低 18%(0.328 vs 0.398)</span>——
+    原因与 nfcorpus 密集 qrels 及 maxsim 排序特性相关(详见 §5/§6)。
+  </div>
+  <div class="key-finding">
+    <strong>k 扫描新结论(2026-08-06):</strong> 召回优势随检索返回数 k 放大——
+    recall@20 反超 +19%, recall@50 +47%, recall@100 达 0.3242(<strong>baseline 的 2.03 倍</strong>);
+    BGE 在 k=20 后完全饱和, 而 ELF 持续增长且未触顶(详见 §7)。
+    且 k≥20 后 ELF 的 precision/ndcg/hit_rate 全面反超, <strong>提升不以精度(幻觉率)下降为代价</strong>(详见 §8)。
+  </div>
+</section>
+
+<!-- ============ 2. 评测设置 ============ -->
+<section>
+  <h2>2. 评测设置</h2>
+  <table>
+    <tbody>
+      <tr><th>数据集</th><td>nfcorpus(HuggingFace BeIR/nfcorpus, 医学领域)</td></tr>
+      <tr><th>采样</th><td>前 20 条有 qrels 的 query; 相关文档子集 542 篇</td></tr>
+      <tr><th>k 值</th><td>[5, 10, 20](§3 结果)与 [5, 10, 20, 50, 100](§7 k 扫描, 2026-08-06); 随机种子 42</td></tr>
+      <tr><th>baseline 链路</th><td>BGE(bge-base-en-v1.5)编码查询与文档 → FAISS 内积检索</td></tr>
+      <tr><th>ELF 链路</th><td>T5-small token 序列(max 64 tokens)→ ColBERT 式 maxsim 检索(不 mean-pooling)</td></tr>
+      <tr><th>环境</th><td>CPU(无 GPU), torch 2.13, faiss 1.14</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============ 3. 最终结果对比 ============ -->
+<section>
+  <h2>3. 最终结果对比(sample=20)</h2>
+  <table>
+    <thead>
+      <tr><th>指标</th><th class="num">baseline(BGE)</th><th class="num">ELF token maxsim</th><th class="num">差值</th><th>判定</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>recall@5</td><td class="num">0.1521</td><td class="num">0.1262</td><td class="num">-17%</td><td><span class="warn">略低</span></td></tr>
+      <tr><td><strong>recall@10</strong></td><td class="num">0.1590</td><td class="num"><strong>0.1605</strong></td><td class="num">+1%</td><td><span class="good">反超</span></td></tr>
+      <tr><td>recall@20</td><td class="num">0.1600</td><td class="num"><strong>0.1907</strong></td><td class="num">+19%</td><td><span class="good">反超</span></td></tr>
+      <tr><td>precision@10</td><td class="num">0.2550</td><td class="num">0.2050</td><td class="num">-20%</td><td><span class="warn">低</span></td></tr>
+      <tr><td>ndcg@5</td><td class="num">0.4454</td><td class="num">0.3550</td><td class="num">-20%</td><td><span class="warn">低</span></td></tr>
+      <tr><td><strong>ndcg@10</strong></td><td class="num">0.3984</td><td class="num">0.3282</td><td class="num">-18%</td><td><span class="warn">低</span></td></tr>
+      <tr><td>ndcg@20</td><td class="num">0.3208</td><td class="num">0.2893</td><td class="num">-10%</td><td><span class="warn">低</span></td></tr>
+      <tr><td><strong>mrr</strong></td><td class="num">0.6000</td><td class="num"><strong>0.6115</strong></td><td class="num">+2%</td><td><span class="good">反超</span></td></tr>
+      <tr><td>hit_rate@10</td><td class="num">0.6000</td><td class="num">0.6000</td><td class="num">0%</td><td><span class="good">持平</span></td></tr>
+    </tbody>
+  </table>
+  <p class="muted">数据来源: experiments/outputs/nfcorpus/summary.csv(baseline)与 elf.csv(token 检索)。</p>
+</section>
+
+<!-- ============ 4. 演进历程 ============ -->
+<section>
+  <h2>4. 演进历程: 从"全面失效"到"反超 baseline"</h2>
+  <table>
+    <thead>
+      <tr><th>阶段</th><th>recall@10</th><th>问题</th><th>修复</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>初始(#32)</td><td class="num">0.003</td><td>ELF 查询与 BGE 文档向量空间错位(余弦≈0)</td><td>文档侧改用 ELF 编码(#34)</td></tr>
+      <tr><td>编码对齐后</td><td class="num">0.03~0.06</td><td>增强噪声尺度错误(768 维噪声能量为信号 69 倍)</td><td>add_noise 方差归一化(#36)</td></tr>
+      <tr><td>真实 denoiser(#37)</td><td class="num">0.000~0.011</td><td>denoiser 把查询推向文本流形中心, 丢失特异性</td><td>与原始编码 blend(α=0.5)</td></tr>
+      <tr><td>blend 后</td><td class="num">0.031</td><td><strong>编码层根因: mean-pooling 有效秩坍缩到 1</strong></td><td>多 token 序列表示(#40)</td></tr>
+      <tr><td><strong>多 token(#39/#40)</strong></td><td class="num"><strong>0.1605</strong></td><td>—</td><td><span class="good">反超 baseline 0.159</span></td></tr>
+    </tbody>
+  </table>
+  <div class="key-finding">
+    <strong>关键转折:</strong> 诊断实验(见 <code>docs/analysis/elf-retrieval-diagnosis.md</code>)发现
+    mean-pooled 单向量表示的有效秩仅 1(所有文档共线, 两两余弦 0.89)——这是 ELF 链路弱的
+    <em>编码层根源</em>。改为 T5 token 级序列 + maxsim 后, 检索能力大幅释放。
+  </div>
+</section>
+
+<!-- ============ 5. 指标解读 ============ -->
+<section>
+  <h2>5. 指标含义与结果解读</h2>
+
+  <h3>5.1 recall@10(反超, +1%)</h3>
+  <div class="formula">recall@10 = (top-10 中相关文档数) / (该 query 全部相关文档数), 对全部 query 取均值</div>
+  <p>ELF 与 BGE 在"把相关文档捞进 top-10"的能力上相当(ELF 平均 2.05 个, BGE 3.10 个——
+  但 ELF 在相关文档少的 query 上比例更高, 均值略胜)。token 级匹配对短文档的词汇重合敏感,
+  召回能力可靠。</p>
+
+  <h3>5.2 mrr(反超, +2%)</h3>
+  <div class="formula">mrr = 1 / (第一个相关文档的排位), 对全部 query 取均值</div>
+  <p>ELF 的第一个相关文档平均排位与 BGE 相当甚至略前(0.6115 vs 0.6000), 说明"最相关文档的
+  命中"不输于 BGE。</p>
+
+  <h3>5.3 ndcg@10(落后, -18%)</h3>
+  <div class="formula">ndcg@10 = DCG(检索结果前 10 的相关度) / IDCG(理想排序), DCG 按排位对数折扣</div>
+  <p>ndcg 对<strong>相关文档的数量 + 排序位置</strong>双重敏感: 相关文档越多、排位越靠前, 得分越高。
+  详细分析见 §6。</p>
+
+  <h3>5.4 precision@10(落后, -20%)</h3>
+  <p>top-10 中相关文档占比: ELF 0.205 vs BGE 0.255——ELF 的 top-10 中约 1/5 是相关文档,
+  低于 BGE 的 1/4。与 ndcg 同源: 相关文档总数更少且排位偏后。</p>
+</section>
+
+<!-- ============ 6. NDCG 为什么低 ============ -->
+<section>
+  <h2>6. NDCG 低的原因(基于数据)</h2>
+
+  <h3>6.1 直接原因: 相关文档数量少且排位靠后</h3>
+  <p>对 20 条 query 逐一统计 top-10 内相关文档的排位分布:</p>
+  <table>
+    <thead>
+      <tr><th>链路</th><th class="num">top1-3 相关文档</th><th class="num">top4-10 相关文档</th><th class="num">top10 合计</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>ELF token</td><td class="num"><span class="warn">1.00</span></td><td class="num">1.05</td><td class="num">2.05</td></tr>
+      <tr><td>BGE</td><td class="num"><span class="good">1.50</span></td><td class="num">1.60</td><td class="num">3.10</td></tr>
+    </tbody>
+  </table>
+  <p>ELF 找到的相关文档<strong>少 34%</strong>、且集中在头部(1-3 位)的更少 33%。
+  ndcg 按排位折扣, 相关文档排在 5-10 位贡献远低于 1-3 位, 因此同样"找到几个相关文档",
+  ELF 的 ndcg 明显吃亏。</p>
+  <p class="muted">注: "少 34%"仅就 <strong>top-10 窗口</strong>而言。k 扫描(§7)显示
+  该结论在长尾<strong>相反</strong>: k≥20 后 ELF 的相关文档数量反超 BGE 并持续放大(recall@100 为 2 倍)。</p>
+
+  <h3>6.2 与数据内容强相关: nfcorpus qrels 极其密集</h3>
+  <table>
+    <tbody>
+      <tr><th>每条 query 的相关文档数</th><td>平均 <strong>31.6</strong> 个(min 1, max 153)</td></tr>
+      <tr><th>qrels 相关度分值</th><td>{1, 2}(二元为主)</td></tr>
+    </tbody>
+  </table>
+  <p>在如此密集的 qrels 下:</p>
+  <ul>
+    <li><strong>recall 容易</strong>: 分母(全部相关文档)固定且巨大, 找到 2-3 个即有可观召回;</li>
+    <li><strong>ndcg 极难</strong>: IDCG 是"31 个相关文档按理想排序"的满分, 检索结果需要把大量相关文档
+      排到前面才能接近。每 query 平均 31 个相关文档, 而 top-10 只能放 10 个——ndcg 对"是否挑出
+      最相关的那些并排在最前"极其挑剔。</li>
+  </ul>
+
+  <h3>6.3 maxsim 的排序特性</h3>
+  <ul>
+    <li>maxsim 分数 = 查询 token 与文档 token 的最大余弦均值, 对<strong>单 token 强匹配</strong>敏感——
+      一个词汇巧合(如医学缩写、常用词)就能把文档推高, 挤占 top1-3 的位置;</li>
+    <li>真正相关的文档可能整体匹配但无"爆发性"单 token, 被排到后面——这正是 ELF top1-3 相关文档
+      少于 BGE 的原因;</li>
+    <li>BGE 的向量内积是<strong>全局语义匹配</strong>, 排序更"均衡", 头部更精准。</li>
+  </ul>
+
+  <div class="warn-box">
+    <strong>数据内容影响的结论:</strong> nfcorpus 的医学短文档 + 密集 qrels 放大了 maxsim 的宽松匹配
+    弱点。若换到 qrels 稀疏的数据集(如 msmarco, 每 query 1-3 个相关), 该类 ndcg 差距预计显著收窄。
+  </div>
+</section>
+
+<!-- ============ 7. k 扫描实验 ============ -->
+<section>
+  <h2>7. k 扫描实验: 召回优势随 k 放大(recall@50/100)</h2>
+  <p>为验证"检索返回数(样本数)越多, 召回率越高"的观察是否延续, 2026-08-06 用与 §3 完全一致的
+  配置(sample=20, 20 queries / 542 docs, seed=42)追加跑 k=[5, 10, 20, 50, 100]:</p>
+  <table>
+    <thead>
+      <tr><th class="num">k</th><th class="num">baseline recall@k</th><th class="num">ELF recall@k</th><th class="num">ELF/baseline</th><th>差距</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">5</td><td class="num">0.1521</td><td class="num">0.1262</td><td class="num">0.83×</td><td><span class="warn">-17%</span></td></tr>
+      <tr><td class="num">10</td><td class="num">0.1590</td><td class="num">0.1605</td><td class="num">1.01×</td><td><span class="good">+1%</span></td></tr>
+      <tr><td class="num">20</td><td class="num">0.1600</td><td class="num">0.1907</td><td class="num">1.19×</td><td><span class="good">+19%</span></td></tr>
+      <tr><td class="num">50</td><td class="num">0.1600</td><td class="num">0.2356</td><td class="num">1.47×</td><td><span class="good">+47%</span></td></tr>
+      <tr><td class="num">100</td><td class="num">0.1600</td><td class="num"><strong>0.3242</strong></td><td class="num"><strong>2.03×</strong></td><td><span class="good">+103%</span></td></tr>
+    </tbody>
+  </table>
+  <div class="key-finding">
+    <strong>关键发现:</strong>
+    <ul>
+      <li><strong>baseline 在 k=20 后完全饱和</strong>: recall@20 = @50 = @100 = 0.1600,
+        BGE 的相关文档 100% 挤在 top-20 内, 长尾为零(全程线性斜率 0.00005/检索位);</li>
+      <li><strong>ELF 持续增长、远未饱和</strong>: k=20→100 段斜率仍有 0.00167/检索位
+        (全程 0.00192/检索位, 约 baseline 的 38 倍), recall@100 = 0.324 且仍在上升;</li>
+      <li><strong>之前 k≤20 的观察低估了 ELF 的优势</strong>: k 越大差距从 +19% 扩大到 +103%。</li>
+    </ul>
+  </div>
+  <p class="muted">数据来源: experiments/outputs/nfcorpus_k100/nfcorpus/baseline.csv 与 elf.csv
+  (2026-08-06 复跑; ELF recall@10=0.16051 与旧 elf.csv 完全一致, 可比性已确认)。
+  每 query 平均 31.6 篇相关文档, ELF recall@100=0.324 距上限仍远, 继续加大 k 仍有上涨空间。</p>
+</section>
+
+<!-- ============ 8. 幻觉率担忧 ============ -->
+<section>
+  <h2>8. 幻觉率担忧: 召回提升不以精度下降为代价</h2>
+  <p>一个常见担忧: ELF 长尾召回更多文档, 是否靠"掺入更多无关文档"(降低 precision)换来的?
+  在<strong>相同 k</strong> 下对比 precision@k(返回 top-k 中相关文档占比, 即检索侧"幻觉率"
+  的对应物), 结论是否定的:</p>
+  <table>
+    <thead>
+      <tr><th class="num">k</th><th class="num">baseline P@k</th><th class="num">ELF P@k</th><th>谁的相关占比更高</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">5</td><td class="num">0.360</td><td class="num">0.270</td><td>baseline(+9pp)</td></tr>
+      <tr><td class="num">10</td><td class="num">0.255</td><td class="num">0.205</td><td>baseline(+5pp)</td></tr>
+      <tr><td class="num">20</td><td class="num">0.1325</td><td class="num">0.1425</td><td><span class="good">ELF</span></td></tr>
+      <tr><td class="num">50</td><td class="num">0.053</td><td class="num">0.096</td><td><span class="good">ELF(+4.3pp)</span></td></tr>
+      <tr><td class="num">100</td><td class="num">0.0265</td><td class="num"><strong>0.081</strong></td><td><span class="good">ELF(3.1×)</span></td></tr>
+    </tbody>
+  </table>
+  <p>三个指标互证, ELF 在 k≥20 时是<strong>全面反超而非此消彼长</strong>:</p>
+  <ul>
+    <li><strong>recall@100</strong>: 0.324 vs 0.160(2.03×)——捞到更多相关文档;</li>
+    <li><strong>precision@100</strong>: 0.081 vs 0.027(3.1×)——返回列表反而更"干净";</li>
+    <li><strong>ndcg@100</strong>: 0.295 vs 0.231——rank 质量也更高(灌水堆无关文档会让 ndcg 显著更低);</li>
+    <li><strong>hit_rate@100</strong>: 0.85 vs 0.6——ELF 覆盖 85% 查询, baseline 仅 60%。</li>
+  </ul>
+  <div class="warn-box">
+    <strong>代价的真实落点在头部, 不在长尾:</strong> k=5/10 时 ELF 的无关占比比 baseline 高 5~9pp。
+    若 top-k 直接喂 LLM(无精排), ELF 头部精度略低, 且此时召回优势尚未显现——这是 ELF 唯一
+    真正不划算的场景。
+  </div>
+</section>
+
+<!-- ============ 9. 实际应用意义 ============ -->
+<section>
+  <h2>9. 实际应用意义</h2>
+  <p>"返回候选数 k 越大 → ELF 优势越明显"的实用性取决于下游用法。漏召回是 RAG 幻觉的主要
+  来源之一——证据没检索到, LLM 只能编造; ELF 的高召回反而降低此类幻觉:</p>
+  <table>
+    <thead>
+      <tr><th>场景</th><th class="num">k</th><th>ELF 的意义</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>常规 RAG, top-5~10 直喂 LLM(无精排)</td><td class="num">5~10</td><td><span class="warn">意义有限, 头部精度还略输</span></td></tr>
+      <tr><td><strong>retrieve-then-rerank 两段式</strong></td><td class="num">50~100 + 精排</td><td><span class="good">意义大: 第一段高召回高精度, 精排后最终 top-k 质量更好</span></td></tr>
+      <tr><td>证据收集 / 合规 / 综述等"不漏"场景</td><td class="num">100+</td><td><span class="good">意义大: 2 倍召回</span></td></tr>
+    </tbody>
+  </table>
+  <p>一句话总结: ELF 的优势不是"捞回更多鱼但鱼里掺了石头", 而是"<strong>捞回更多鱼, 且鱼的质量
+  占比也更高</strong>"。真正的代价在头部小窗口的精度(ndcg), 不在长尾——它的价值需要配精排器
+  或高召回场景才能兑现。</p>
+</section>
+
+<!-- ============ 10. 结论 ============ -->
+<section>
+  <h2>10. 总结</h2>
+  <ol>
+    <li><strong>多 token 检索使 ELF 链路从"全面失效"逆转为"recall/mrr 反超 BGE"</strong>,
+      证明 T5 token 级表示在检索上的潜力; mean-pooling 是此前失利的编码层根因。</li>
+    <li><strong>剩余差距集中在排序精度</strong>(ndcg/precision): maxsim 宽松匹配在 nfcorpus
+      密集 qrels 下头部排序不如 BGE 精细, 属于数据特性 + 检索算法特性的共同结果。</li>
+    <li><strong>该差距非阻断性问题</strong>: recall、mrr、hit_rate 已达标; 后续如需拉平 ndcg,
+      可考虑 IDF 加权 maxsim / 两阶段重排 / 混合分数(均未实施, 作为可选项)。</li>
+    <li><strong>k 扫描(§7)修正了"ELF 找到的相关文档少"的旧认知</strong>: 该结论仅限 top-10 窗口;
+      在长尾(k≥20)ELF 的 recall、precision、ndcg、hit_rate 全面反超 BGE, 且优势随 k 放大
+      (recall@100 为 2.03 倍), 仍未饱和。</li>
+    <li><strong>幻觉率担忧(§8)不成立</strong>: 长尾召回提升不以 precision 下降为代价;
+      ELF 的代价集中在头部小窗口(k≤10)的排序精度, 价值需配精排器或高召回场景兑现(§9)。</li>
+  </ol>
+  <p class="muted">相关代码: src/elf/token_retriever.py、src/elf/native_encoder.py、src/baseline/benchmark.py;
+  诊断: docs/analysis/elf-retrieval-diagnosis.md; 复现: py -m src.baseline.benchmark --method elf
+  --dataset nfcorpus --sample 20 --token-retrieval</p>
+</section>
+
+</main>
+</body>
+</html>

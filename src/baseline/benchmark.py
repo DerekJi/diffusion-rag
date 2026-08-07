@@ -10,6 +10,8 @@ Phase 3.1 起支持双链路一键切换（仅替换查询编码方式）:
 文档侧编码（BGE）与 FAISS 索引在两条链路上保持一致（共享 indexer/retriever）。
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from collections.abc import Callable
@@ -35,7 +37,9 @@ from src.config import (
     SUPPORTED_DATASETS,
     SUPPORTED_METHODS,
 )
+from src.elf.native_encoder import ELFNativeEncoder
 from src.elf.pipeline import ELFPipeline
+from src.elf.token_retriever import ColBERTRetriever, TokenIndex
 from src.evaluation.dataset import DatasetTriple, load_dataset
 from src.evaluation.metrics import compute_metrics_batch
 from src.utils.encoder_factory import create_encoder
@@ -46,6 +50,25 @@ from src.vector_store.indexer import FAISSIndexer
 from src.vector_store.retriever import Retriever
 
 logger = get_logger(__name__)
+
+
+def _validate_token_retrieval_pipeline(elf_pipeline: ELFPipeline | None) -> ELFNativeEncoder:
+    """校验 token 检索模式的前置条件并返回 ELFNativeEncoder。
+
+    Args:
+        elf_pipeline: ELFPipeline 实例（可为 None，此时抛出 RuntimeError）。
+
+    Returns:
+        pipeline 中的 ELFNativeEncoder 实例。
+
+    Raises:
+        RuntimeError: elf_pipeline 为 None 或其 encoder 不是 ELFNativeEncoder。
+    """
+    if elf_pipeline is None:
+        raise RuntimeError("token 检索模式需要 ELFPipeline")
+    if not isinstance(elf_pipeline.encoder, ELFNativeEncoder):
+        raise RuntimeError("token 检索模式需要 ELFNativeEncoder (提供 encode_tokens)")
+    return elf_pipeline.encoder
 
 
 @dataclass
@@ -62,17 +85,21 @@ class BenchmarkContext:
         data: 采样后的数据集三元组。
         encoder: 文档侧编码器（baseline → BGE；elf → ELFPipeline），
                  baseline 查询编码也复用该实例。
-        retriever: 基于文档向量构建的检索器。
+        retriever: 基于文档向量构建的 FAISS 检索器（token 模式下为 None）。
         elf_pipeline: ELFPipeline（仅 method='elf' 时非 None），
                       文档编码与查询增强共用同一实例。
+        token_retriever: ColBERT 式多 token 检索器（method='elf' 且
+                         use_token_retrieval 时非 None, issue #39）。
     """
 
     dataset: str
     method: str
     data: DatasetTriple
     encoder: BaselineEncoder | ELFPipeline
-    retriever: Retriever
+    retriever: Retriever | None = None
     elf_pipeline: ELFPipeline | None = None
+    token_retriever: ColBERTRetriever | None = None
+    token_encoder: ELFNativeEncoder | None = None
 
 
 def build_benchmark_context(
@@ -82,6 +109,8 @@ def build_benchmark_context(
     index_nlist: int = DEFAULT_INDEX_NLIST,
     seed: int = DEFAULT_SEED,
     sample: int | None = None,
+    use_token_retrieval: bool = False,
+    max_tokens: int = 64,
 ) -> BenchmarkContext:
     """加载数据集、采样并编码文档建索引，返回可复用的评测上下文。
 
@@ -102,6 +131,8 @@ def build_benchmark_context(
         index_nlist: FAISS IVF 聚类中心数。
         seed: 随机种子。
         sample: 仅取前 N 条有 qrels 的 query，None 为全量。
+        use_token_retrieval: 启用 ColBERT 式多 token 检索（仅 method='elf' 生效）。
+        max_tokens: token 序列截断长度（默认 64，仅 use_token_retrieval 时生效）。
 
     Returns:
         构建完成的 BenchmarkContext。
@@ -129,18 +160,29 @@ def build_benchmark_context(
     logger.info("编码 %d 篇文档 (method=%s)...", len(doc_texts), method)
 
     encoder, elf_pipeline = create_encoder(method, encoder_name)
-    if elf_pipeline is not None:
-        # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
-        # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
-        doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
-    else:
-        # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
-        assert isinstance(encoder, BaselineEncoder)
-        doc_vectors = encoder.encode_batch(doc_texts)
 
-    indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
-    indexer.build(doc_vectors, doc_ids)
-    retriever = Retriever(indexer)
+    token_retriever = None
+    token_encoder = None
+    if method == METHOD_ELF and use_token_retrieval:
+        # ColBERT 式多 token 检索(issue #39): 文档保留 T5 token 序列,
+        # 不做 mean-pooling(诊断确认 pooled 表示有效秩坍缩到 1)
+        token_encoder = _validate_token_retrieval_pipeline(elf_pipeline)
+        index = TokenIndex.build(token_encoder, doc_ids, doc_texts, max_tokens=max_tokens)
+        token_retriever = ColBERTRetriever(index)
+        retriever = None
+    else:
+        # FAISS 路径：编码文档 → pooled 向量 → 建索引
+        if elf_pipeline is not None:
+            # method='elf'：encoder 与 elf_pipeline 是同一 ELFPipeline 实例,
+            # 文档编码走 pipeline.encoder.encode_batch（ELF 空间）
+            doc_vectors = elf_pipeline.encoder.encode_batch(doc_texts)
+        else:
+            # method='baseline'：encoder 为 BaselineEncoder（BGE 空间）
+            assert isinstance(encoder, BaselineEncoder)
+            doc_vectors = encoder.encode_batch(doc_texts)
+        indexer = FAISSIndexer(dimension=768, nlist=index_nlist)
+        indexer.build(doc_vectors, doc_ids)
+        retriever = Retriever(indexer)
     return BenchmarkContext(
         dataset=dataset,
         method=method,
@@ -148,6 +190,8 @@ def build_benchmark_context(
         encoder=encoder,
         retriever=retriever,
         elf_pipeline=elf_pipeline,
+        token_retriever=token_retriever,
+        token_encoder=token_encoder,
     )
 
 
@@ -164,6 +208,8 @@ def run_benchmark(
     elf_noise_t: float = DEFAULT_ELF_NOISE_T,
     elf_cfg_scale: float = DEFAULT_ELF_CFG_SCALE,
     shared: BenchmarkContext | None = None,
+    use_token_retrieval: bool = False,
+    max_tokens: int = 64,
 ) -> pd.DataFrame:
     """运行完整检索评测流程（Baseline / ELF 双链路）。
 
@@ -189,6 +235,12 @@ def run_benchmark(
         elf_cfg_scale: ELF CFG 引导强度（仅 method='elf' 生效）。
         shared: 预构建的共享上下文（数据集 + 编码器 + 检索器 + ELF pipeline）。
                 传入时跳过数据加载 / 文档编码 / 建索引，供参数网格多组复用。
+                注意：use_token_retrieval 仅在 shared=None 时生效（传入 shared 时
+                假定上下文已配置好 token 检索器）。
+        use_token_retrieval: 启用 ColBERT 式多 token 检索（仅 method='elf' 生效；
+                            shared 非 None 时忽略，由上下文决定检索模式）。
+        max_tokens: token 序列截断长度（默认 64）。shared 非 None 时仍用于查询侧
+                    截断，应与 shared 上下文构建时保持一致。
 
     Returns:
         包含聚合指标的 DataFrame（一行，列含 dataset/method 及各 k 指标）。
@@ -214,6 +266,8 @@ def run_benchmark(
             index_nlist=index_nlist,
             seed=seed,
             sample=sample,
+            use_token_retrieval=use_token_retrieval,
+            max_tokens=max_tokens,
         )
     else:
         ctx = shared
@@ -229,8 +283,9 @@ def run_benchmark(
 
     # 2. 编码查询 + 检索（仅此处按 method 切换链路）
     query_ids = sorted(data.queries.keys())
+    # 查询编码器：baseline/elf 链路赋值；token 检索模式为 None（由 encode_tokens 批量完成）
+    query_encoder: Callable[[str], NDArray[np.float32]] | None = None
 
-    query_encoder: Callable[[str], NDArray[np.float32]]
     if method == METHOD_ELF:
         if ctx.elf_pipeline is None:
             try:
@@ -239,33 +294,60 @@ def run_benchmark(
                 logger.error("ELF 模型加载失败 (可能需要联网下载权重): %s", e)
                 raise RuntimeError(f"ELF 模型加载失败: {e}") from e
         elf_pipeline = ctx.elf_pipeline
-        rng = np.random.default_rng(seed)
-        logger.info(
-            "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
-            elf_steps,
-            elf_noise_t,
-            elf_cfg_scale,
-        )
 
-        def _elf_query_encode(text: str) -> NDArray[np.float32]:
-            """ELF 链路查询编码：编码 → 加噪 → 去噪 → CFG 引导。"""
-            return elf_pipeline.enhance(
-                text,
-                steps=elf_steps,
-                noise_t=elf_noise_t,
-                cfg_scale=elf_cfg_scale,
-                rng=rng,
+        if ctx.token_retriever is None:
+            # FAISS 路径：ELF 增强编码
+            rng = np.random.default_rng(seed)
+            logger.info(
+                "ELF 增强链路已加载 (steps=%d, noise_t=%.2f, cfg_scale=%.1f)",
+                elf_steps,
+                elf_noise_t,
+                elf_cfg_scale,
             )
 
-        query_encoder = _elf_query_encode
+            def _elf_query_encode(text: str) -> NDArray[np.float32]:
+                """ELF 链路查询编码：编码 → 加噪 → 去噪 → CFG 引导。"""
+                return elf_pipeline.enhance(
+                    text,
+                    steps=elf_steps,
+                    noise_t=elf_noise_t,
+                    cfg_scale=elf_cfg_scale,
+                    rng=rng,
+                )
+
+            query_encoder = _elf_query_encode
+        else:
+            # token 检索模式：查询编码由 encode_tokens 批量完成，
+            # query_encoder 在此路径下不被调用
+            query_encoder = None
     else:
         query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
+    # token 检索模式前置校验 + 批量查询编码（仅一次，而非逐 query 重复断言/编码）
+    if ctx.token_retriever is not None:
+        # 优先复用 build_benchmark_context 中已校验的 encoder；
+        # shared 上下文由外部手动构建时可能未设置，回退到重新校验
+        token_encoder = ctx.token_encoder or _validate_token_retrieval_pipeline(ctx.elf_pipeline)
+        # 批量编码所有查询 token（避免逐 query 产生 N 次独立 tokenizer/torch 调用）
+        all_query_texts = [data.queries[qid] for qid in query_ids]
+        all_qt, all_qm = token_encoder.encode_tokens(all_query_texts, max_tokens=max_tokens)
+    else:
+        all_qt, all_qm = None, None
     all_results: dict[str, list[str]] = {}
-    for qid in tqdm(query_ids, desc="检索中"):
-        qvec = query_encoder(data.queries[qid])
-        doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
+    for i, qid in enumerate(tqdm(query_ids, desc="检索中")):
+        if ctx.token_retriever is not None:
+            # 多 token 检索: 查询 token 编码 + maxsim
+            if all_qt is None or all_qm is None:
+                raise RuntimeError("批量查询 token 编码未完成（前置校验异常）")
+            doc_ids_found, _ = ctx.token_retriever.search(all_qt[i], all_qm[i], k=max(k_values))
+        else:
+            if retriever is None:
+                raise RuntimeError("FAISS 检索器未初始化")
+            if query_encoder is None:
+                raise RuntimeError("query_encoder 未初始化（前置校验异常）")
+            qvec = query_encoder(data.queries[qid])
+            doc_ids_found, _ = retriever.search(qvec, k=max(k_values))
         all_results[qid] = doc_ids_found
 
     # 4. 计算指标
@@ -333,6 +415,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cfg-scale", type=float, default=DEFAULT_ELF_CFG_SCALE, help="ELF CFG 引导强度"
     )
+    parser.add_argument(
+        "--token-retrieval",
+        action="store_true",
+        help="使用 ColBERT 式多 token 检索(method=elf, issue #39)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=64, help="token 检索的序列截断长度(默认 64)"
+    )
     return parser
 
 
@@ -352,6 +442,8 @@ def _main() -> int:
         elf_steps=args.steps,
         elf_noise_t=args.noise_t,
         elf_cfg_scale=args.cfg_scale,
+        use_token_retrieval=args.token_retrieval,
+        max_tokens=args.max_tokens,
     )
     # print() is intentional: CLI stdout output for the result table
     print(df.to_markdown())
