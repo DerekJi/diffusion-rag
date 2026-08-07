@@ -3,7 +3,6 @@
 使用 mock 模式，无须下载真实模型或 ELF 权重。
 """
 
-import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

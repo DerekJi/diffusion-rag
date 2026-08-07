@@ -131,6 +131,9 @@ class ColBERTRetriever:
         doc_tokens = self._index.tokens
         doc_mask = self._index.mask
 
+        if qt.shape[1] != doc_tokens.shape[2]:
+            raise ValueError(f"查询向量维度 {qt.shape[1]} 与索引维度 {doc_tokens.shape[2]} 不一致")
+
         # 逐 token 相似度 (Lq, N, L)
         sims = np.einsum("qd,nld->qnl", qt, doc_tokens)
         sims = np.where(doc_mask[None] > 0, sims, -np.inf)  # 排除 padding

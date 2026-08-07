@@ -320,16 +320,21 @@ def run_benchmark(
         else:
             # token 检索模式：查询编码由内联 encode_tokens 完成，
             # query_encoder 在此路径下不被调用
-            query_encoder = lambda _: np.empty(0, dtype=np.float32)  # unreachable
+            query_encoder = lambda _: np.zeros(768, dtype=np.float32)  # unreachable
     else:
         query_encoder = encoder.encode
 
     logger.info("检索 %d 条查询 (method=%s)...", len(query_ids), method)
     # token 检索模式前置校验（仅一次，而非逐 query 重复断言）
+    token_encoder: ELFNativeEncoder | None = None
     if ctx.token_retriever is not None:
-        token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
-    else:
-        token_encoder: ELFNativeEncoder | None = None
+        if shared is not None:
+            # 外部传入上下文时重新校验
+            token_encoder = _validate_token_retrieval_pipeline(ctx.elf_pipeline)
+        else:
+            # build_benchmark_context 中已完成校验，直接获取
+            assert ctx.elf_pipeline is not None
+            token_encoder = ctx.elf_pipeline.encoder
     all_results: dict[str, list[str]] = {}
     for qid in tqdm(query_ids, desc="检索中"):
         if ctx.token_retriever is not None:
